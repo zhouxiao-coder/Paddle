@@ -42,6 +42,7 @@ __all__ = [
     "data_layer",
     "embedding_layer",
     "fc_layer",
+    "vae_norm_layer",
     "grumemory",
     "pooling_layer",
     "lstmemory",
@@ -124,6 +125,7 @@ class LayerType(object):
     POOLING_MAX = "max"
     POOLING_AVG = 'average'
     FC_LAYER = "fc"
+    VAE_NORM_LAYER = "vae_norm"
     COST = 'cost'
     COSINE_SIM_VEC = 'cos_vm'
     COSINE_SIM = 'cos'
@@ -908,6 +910,45 @@ def fc_layer(input,
         **ExtraLayerAttribute.to_kwargs(layer_attr))
     return LayerOutput(
         name, LayerType.FC_LAYER, input, activation=act, size=size)
+
+
+@wrap_name_default()
+@wrap_param_attr_default()
+@wrap_bias_attr_default()
+@wrap_act_default()
+@layer_support(ERROR_CLIPPING, DROPOUT)
+def vae_norm_layer(input, size, act=None, name=None,
+             param_attr=None, bias_attr=None, layer_attr=None):
+    """
+    """
+    if isinstance(input, LayerOutput):
+        input = [input]
+        assert not isinstance(param_attr, list)
+        param_attr = [param_attr]
+    else:
+        if isinstance(param_attr, list) or isinstance(param_attr, tuple):
+            assert len(input) == len(param_attr)
+        else:
+            param_attr = [copy.deepcopy(param_attr) for _ in range(len(input))]
+
+    assert isinstance(input, list)
+
+    def __idx_to_input__(i):
+        attr = param_attr[i]
+        assert isinstance(attr, ParameterAttribute)
+        return Input(input[i].name, **attr.attr)
+
+    Layer(
+        inputs=map(__idx_to_input__, range(len(input))),
+        name=name,
+        type=LayerType.VAE_NORM_LAYER,
+        size=size,
+        bias=ParamAttr.to_bias(bias_attr),
+        active_type=act.name,
+        **ExtraLayerAttribute.to_kwargs(layer_attr)
+    )
+    return LayerOutput(name, LayerType.VAE_NORM_LAYER, input, activation=act,
+                       size=size)
 
 
 @wrap_name_default("print")

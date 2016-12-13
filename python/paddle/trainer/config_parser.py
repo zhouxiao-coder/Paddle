@@ -1520,6 +1520,29 @@ class FCLayer(LayerBase):
                                         format)
         self.create_bias_parameter(bias, self.config.size)
 
+@config_layer('vae_norm')
+class VaeNormLayer(LayerBase):
+    def __init__(
+            self,
+            name,
+            size,
+            inputs,
+            bias=True,
+            **xargs):
+        super(VaeNormLayer, self).__init__(name, 'vae_norm', size, inputs=inputs, **xargs)
+        for input_index in xrange(len(self.inputs)):
+            input_layer = self.get_input_layer(input_index)
+            psize = self.config.size * input_layer.size * 2
+            dims = [input_layer.size, self.config.size, 2]
+            format = self.inputs[input_index].format
+            sparse = format == "csr" or format == "csc"
+
+            if sparse:
+                psize = self.inputs[input_index].nnz * 2
+
+            self.create_input_parameter(input_index, psize, dims, sparse, format)
+        self.create_bias_parameter(bias, self.config.size * 2)
+
 
 @config_layer('selective_fc')
 class SelectiveFCLayer(LayerBase):
