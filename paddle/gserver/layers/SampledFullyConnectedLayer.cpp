@@ -15,11 +15,8 @@ bool SampledFullyConnectedLayer::init(const LayerMap& layerMap,
                                         const ParameterMap& parameterMap) {
   Layer::init(layerMap, parameterMap);
   _fullOutputSize = config_.full_output_size();
-  LOG(INFO) << "Joe: _fullOutputSize=" << _fullOutputSize ;
 
-  /* Joe: last input always doesn't have corresponding parameters, it's
-   * either selected layer (when sampling in data provider) or
-   * label layer(when sampling in this class code)
+  /* The last input supplies true labels
   */
   inputNum_ = inputLayers_.size() - 1;
   labelLayer_ = inputLayers_[inputNum_];
@@ -27,7 +24,7 @@ bool SampledFullyConnectedLayer::init(const LayerMap& layerMap,
   for (size_t i = 0; i < inputNum_; i++) {
     size_t height = inputLayers_[i]->getSize();
     size_t width = _fullOutputSize;
-    // NOTE weight is transpoed
+    // Notice the weight is transpoed
     weights_.emplace_back(new Weight(width, height, parameters_[i]));
   }
 
@@ -37,7 +34,9 @@ bool SampledFullyConnectedLayer::init(const LayerMap& layerMap,
 
   if (config_.neg_sampling_dist_size()) {
     CHECK_EQ(_fullOutputSize, config_.neg_sampling_dist_size());
-    sampler_.reset(new MultinomialSampler(config_.neg_sampling_dist().data(),
+    // sampler_.reset(new MultinomialSampler(config_.neg_sampling_dist().data(),
+                                          // _fullOutputSize));
+    sampler_.reset(MultinomialSampler::create(config_.neg_sampling_dist().data(),
                                           _fullOutputSize));
   }
 
@@ -98,7 +97,7 @@ void SampledFullyConnectedLayer::forward(PassType passType) {
 
     //    always use sparse computation
     REGISTER_TIMER("selective.plain");
-    interOutput_->mul(input, weight->getTranspose(), 1, scaleT);
+    interOutput_->mul(*input, *weight->getTranspose(), 1, scaleT);
   }
 
   if (biases_) {
@@ -133,7 +132,6 @@ void SampledFullyConnectedLayer::backward(const UpdateCallback& callback) {
     biases_->getParameterPtr()->incUpdate(callback);
   }
 
-
   // backward is different from FullyConnectedLayer
   // because the weight is transposed
   for (size_t i = 0; i < inputNum_; i++) {
@@ -141,14 +139,14 @@ void SampledFullyConnectedLayer::backward(const UpdateCallback& callback) {
     MatrixPtr preGrad = getInputGrad(i);
     if (preGrad) {
       REGISTER_TIMER_INFO("BpMulTimer", getName().c_str());
-      preGrad->mul(interOutGrad_, weights_[i]->getW(), 1, 1);
+      preGrad->mul(*interOutGrad_, *weights_[i]->getW(), 1, 1);
     }
 
     MatrixPtr wGrad = weights_[i]->getWGrad();
     if (wGrad) {
       REGISTER_TIMER_INFO("GradMulTimer", getName().c_str());
       MatrixPtr input = getInputValue(i);
-      wGrad->mul(interOutGrad_->getTranspose(), input, 1, 1);
+      wGrad->mul(*interOutGrad_->getTranspose(), *input, 1, 1);
     }
 
     {
@@ -179,8 +177,18 @@ void SampledFullyConnectedLayer::prepareSamples() {
 
   rowOffsets[0] = 0;
   int idx = 0;
-  // update row offsets and true labels for all samples in batch
 
+  // sample noise
+  std::set<int> noises;
+  // hint: "remove accidental hits" can be implemented here, insert true ids into the set 
+  // A naive sequential sampling implementation.
+  if (config_.share_sample_in_batch()) {
+    while(noises.size() < numberSamples) {
+      noises.emplace(sampler_->gen(randEngine));
+    }
+  }
+
+  // update row offsets and true labels for all samples in batch
   for (size_t i = 0; i < batchSize; ++i) {
     // TODO: getElement may be slow for gpu, check vector copy api
     auto true_id = label->getElement(i);
@@ -192,14 +200,12 @@ void SampledFullyConnectedLayer::prepareSamples() {
         probsData[idx] = -log(config_.num_neg_samples() * config_.neg_sampling_dist(true_id));
     }
     idx++;
-
-    // sample noise
-    std::set<int> noises;
-    // remove accidental hits can be implemented here, insert true ids to the set beforehand
-    // A naive sequential sampling implementation.
-    // TODO: Better efficiency could be achieved by optimizing sampler
-    while(noises.size() < numberSamples) {
-      noises.emplace(sampler_->gen(randEngine));
+    
+    if (!config_.share_sample_in_batch()) {
+      noises.clear();
+      while(noises.size() < numberSamples) {
+        noises.emplace(sampler_->gen(randEngine));
+      }
     }
     for (auto id: noises) {
       colIndices[idx] = id;

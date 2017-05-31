@@ -1644,6 +1644,53 @@ class SelectiveFCLayer(LayerBase):
                                         format)
         self.create_bias_parameter(bias, self.config.size)
 
+@config_layer('sampled_fc')
+class SampledFCLayer(LayerBase):
+    def __init__(self,
+                 name,
+                 size,
+                 output_size,
+                 inputs,
+                 num_neg_samples=25,
+                 neg_sampling_dist=None,
+                 subtract_log_q=1,
+                 share_sample_in_batch=True,
+                 bias=True,
+                 **xargs):
+        super(SampledFCLayer, self).__init__(
+            name, 'sampled_fc', 0, inputs=inputs, **xargs)
+        self.config.size = output_size
+        self.set_layer_size(output_size)
+        self.config.full_output_size = size
+
+        self.config.num_neg_samples = num_neg_samples
+        self.config.neg_sampling_dist.extend(neg_sampling_dist)
+        self.config.subtract_log_q = subtract_log_q
+        self.config.share_sample_in_batch = share_sample_in_batch
+
+        # user MUST know if sampled fc is used in training,
+        # parameter matrices saved by this layer are automatically transposed,
+        # BUT bias is not.
+
+        input_num = len(self.inputs)
+        config_assert(input_num >= 2,
+                      ("sampled_fc Layer has at least two inputs"))
+        input_num -= 1
+
+        full_parameter_size = size
+        for input_index in xrange(input_num):
+            input_layer = self.get_input_layer(input_index)
+            psize = full_parameter_size * input_layer.size
+            dims = [input_layer.size, full_parameter_size]
+            dims = dims[::-1]  # transpose the parameter
+            format = self.inputs[input_index].format
+            sparse = format == "csr" or format == "csc"
+            if sparse:
+                psize = self.inputs[input_index].nnz
+            self.create_input_parameter(input_index, psize, dims, sparse,
+                                        format)
+        self.create_bias_parameter(bias, full_parameter_size)
+
 
 @config_layer('print')
 class PrintLayer(LayerBase):

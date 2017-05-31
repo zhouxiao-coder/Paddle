@@ -92,6 +92,7 @@ __all__ = [
     'tensor_layer',
     'selective_fc_layer',
     'sampling_id_layer',
+    'sampled_fc_layer',
     'slope_intercept_layer',
     'trans_full_matrix_projection',
     'linear_comb_layer',
@@ -179,6 +180,7 @@ class LayerType(object):
     TENSOR_LAYER = "tensor"
     SEL_FC_LAYER = "selective_fc"
     SAMPLING_ID_LAYER = "sampling_id"
+    SAMPLED_FC_LAYER = "sampled_fc" 
     SLOPE_INTERCEPT_LAYER = "slope_intercept"
     LINEAR_COMBINATION_LAYER = "convex_comb"
     BLOCK_EXPAND = "blockexpand"
@@ -4370,13 +4372,14 @@ def selective_fc_layer(input,
             param_attr = [copy.deepcopy(param_attr) for _ in range(len(input))]
 
     assert isinstance(input, collections.Sequence)
-    assert isinstance(select, LayerOutput)
-    if select.size is not None:
-        assert select.size == size
+
+    inputs = [Input(ipt.name, **attr.attr) for ipt, attr in zip(input, param_attr)]
+    if select is not None:
+        assert isinstance(select, LayerOutput)
+        inputs.append(select.name)
+
     Layer(
-        inputs=[
-            Input(ipt.name, **attr.attr) for ipt, attr in zip(input, param_attr)
-        ] + [select.name],
+        inputs=inputs,
         name=name,
         type=LayerType.SEL_FC_LAYER,
         size=size,
@@ -4386,12 +4389,122 @@ def selective_fc_layer(input,
         has_selected_colums=has_selected_colums,
         selective_fc_full_mul_ratio=mul_ratio,
         **ExtraLayerAttribute.to_kwargs(layer_attr))
+    
+    output_inputs = list(input)
+    if select is not None:
+        output_inputs = output_inputs + [select]
     return LayerOutput(
         name,
         LayerType.SEL_FC_LAYER,
+        output_inputs,
         list(input) + [select],
         activation=act,
         size=size)
+
+@wrap_name_default()
+@wrap_param_attr_default()
+@wrap_bias_attr_default()
+@wrap_act_default()
+@layer_support()
+def sampled_fc_layer(input,
+                    full_output_size,
+                    sampled_output_size,
+                    label,
+                    neg_sampling_dist,
+                    num_neg_samples=25,
+                    subtract_log_q=1,
+                    share_sample_in_batch=True,
+                    act=None,
+                    name=None,
+                    param_attr=None,
+                    bias_attr=None,
+                    layer_attr=None):
+    """
+    
+    To conduct importance sampling, the usage is:
+
+    .. code-block:: python
+
+       sampled_fc = sampled_fc_layer(input=input, size=10000, 
+        output_size=25, label=label, neg_sampling_dist=neg_sampling_dist,
+        subtract_log_q=1, act=SoftmaxActivation())
+
+    :param name: The Layer Name.
+    :type name: basestring
+    :param input: The input layer.
+    :type input: LayerOutput|list|tuple
+    :param full_output_size: The full output dimension.
+    :type full_output_size: int
+    :param sampled_output_size: The sampled output dimension, usually #true_sample + num_neg_samples
+    :type sampled_output_size: int
+    :param label: label layer, provide true samples 
+    :type label: LayerOutput|list|tuple
+    :param neg_distribution: The distribution for generating the random negative labels.
+                             A uniform distribution will be used if not provided.
+                             If not None, its length must be equal to num_classes.
+    :type neg_distribution: list|tuple|collections.Sequence|None
+    :param num_neg_samples: number of negative samples. Default is 25.
+    :type num_neg_samples: int
+    :param subtract_log_q: how to handle log of Q (the probability indicated by noise distribution).
+                           currently support 3 values (0, 1, 2), means don't subtract(0), subtract log_q(1),
+                           or subtract num_neg_samples * log_q(2)
+    :type num_neg_samples: int
+    :param share_sample_in_batch: whether share negative samples in the same batch. 
+    :type num_neg_samples: boolean
+                    subtract_log_q=1,
+                    share_sample_in_batch=True,
+    :param act: Activation Type. Default is tanh.
+    :type act: BaseActivation
+    :param param_attr: The Parameter Attribute.
+    :type param_attr: ParameterAttribute
+    :param bias_attr: The Bias Attribute. If no bias, then pass False or
+                      something not type of ParameterAttribute. None will get a
+                      default Bias.
+    :type bias_attr: ParameterAttribute|None|Any
+    :param layer_attr: Extra Layer config.
+    :type layer_attr: ExtraLayerAttribute|None
+    :return: LayerOutput object.
+    :rtype: LayerOutput
+    """
+    if isinstance(input, LayerOutput):
+        input = [input]
+        assert not isinstance(param_attr, collections.Sequence)
+        param_attr = [param_attr]
+    else:
+        if isinstance(param_attr, collections.Sequence):
+            assert len(input) == len(param_attr)
+        else:
+            param_attr = [copy.deepcopy(param_attr) for _ in range(len(input))]
+
+    assert isinstance(input, collections.Sequence)
+
+    inputs = [Input(ipt.name, **attr.attr) for ipt, attr in
+              zip(input, param_attr)]
+    assert isinstance(label, LayerOutput)
+    assert label.layer_type == LayerType.DATA
+    inputs.append(label.name)
+
+    Layer(
+        inputs=inputs,
+        name=name,
+        type=LayerType.SAMPLED_FC_LAYER,
+        size=full_output_size,
+        output_size=sampled_output_size,
+        bias=ParameterAttribute.to_bias(bias_attr),
+        active_type=act.name,
+        num_neg_samples=num_neg_samples,
+        neg_sampling_dist=neg_sampling_dist,
+        subtract_log_q=subtract_log_q,
+        share_sample_in_batch=share_sample_in_batch,
+        **ExtraLayerAttribute.to_kwargs(layer_attr))
+
+    output_inputs = list(input)
+    return LayerOutput(
+        name,
+        LayerType.SAMPLED_FC_LAYER,
+        output_inputs,
+        activation=act,
+        size=sampled_output_size)
 
 
 @wrap_name_default()

@@ -388,6 +388,8 @@ void Layer::forwardDropOut() {
                            outV->getWidth(),
                            false,
                            useGpu(deviceId_));
+    LOG(INFO) << "Joe: dropout mask size " << outV->getHeight() << ":" << outV->getWidth()
+              << ", sequence length is " << output_.getNumSequences() << ", hasSubseq " << output_.hasSubseq();
     dropOutMask_->randomizeUniform();  // generate a uniform random matrix
     dropOutMask_->biggerThanScalar(config_.drop_rate());  // random mask
     outV->dotMul(*outV, *dropOutMask_);                   // dropout

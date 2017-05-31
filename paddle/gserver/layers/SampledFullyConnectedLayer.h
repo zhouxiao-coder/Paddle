@@ -32,13 +32,12 @@ private:
   MatrixPtr selColsProbs_;
 
   size_t inputNum_;
-  size_t _word_dim;
   size_t _fullOutputSize;
 
   /// interOutput_ shared same memory with output_.value.
   MatrixPtr interOutput_;
 
-  /// if fullOutput_ is false, interOutGrad_ sparse matrix
+  /// interOutGrad_ sparse matrix
   MatrixPtr interOutGrad_;
 
   LayerPtr labelLayer_;
