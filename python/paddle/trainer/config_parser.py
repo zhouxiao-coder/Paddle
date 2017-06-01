@@ -1359,6 +1359,7 @@ class LayerBase(object):
             device=None,
             active_type="",
             drop_rate=0.,
+            share_dropout_mask_in_seq=False,
             coeff=None):
         config_assert('@' not in name,
                       "layer name: %s contain special character @" % name)

@@ -1372,7 +1372,7 @@ def simple_attention(encoded_sequence,
 
 
 @wrap_name_default("dropout")
-def dropout_layer(input, dropout_rate, name=None):
+def dropout_layer(input, dropout_rate, share_dropout_mask_in_seq=False, name=None):
     """
     @TODO(yuyang18): Add comments.
 
@@ -1386,7 +1386,8 @@ def dropout_layer(input, dropout_rate, name=None):
         input=input,
         act=LinearActivation(),
         bias_attr=False,
-        layer_attr=ExtraAttr(drop_rate=dropout_rate))
+        layer_attr=ExtraAttr(drop_rate=dropout_rate,
+        share_dropout_mask_in_seq=share_dropout_mask_in_seq))
 
 
 def inputs(layers, *args):

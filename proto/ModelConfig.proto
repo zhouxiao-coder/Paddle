@@ -447,10 +447,13 @@ message LayerConfig {
   // leave empty or set to -1 to disable this stride pooling.
   optional int32 seq_pool_stride = 53 [default = -1];
 
-  // full output size, used in selective fc layer2 for sampling
-  optional uint32 full_output_size = 54 [default=0];
-  optional uint32 subtract_log_q = 55 [default=1];
-  optional bool share_sample_in_batch = 56;
+  // full output size, used in sampled fc layer2 for sampling
+  optional uint32 full_output_size = 54 [default = 0];
+  optional uint32 subtract_log_q = 55 [default = 1];
+  optional bool share_sample_in_batch = 56 [default = true];
+
+  // share dropout mask inside sequence
+  optional bool share_dropout_mask_in_seq = 57 [default = false];
 }
 
 message EvaluatorConfig {

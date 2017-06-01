@@ -388,10 +388,27 @@ void Layer::forwardDropOut() {
                            outV->getWidth(),
                            false,
                            useGpu(deviceId_));
-    LOG(INFO) << "Joe: dropout mask size " << outV->getHeight() << ":" << outV->getWidth()
-              << ", sequence length is " << output_.getNumSequences() << ", hasSubseq " << output_.hasSubseq();
-    dropOutMask_->randomizeUniform();  // generate a uniform random matrix
-    dropOutMask_->biggerThanScalar(config_.drop_rate());  // random mask
+    if (config_.share_dropout_mask_in_seq()) {
+      auto startPositions = output_.getCpuStartPositions();
+      for (size_t i = 0; i < output_.getNumSequences(); ++i) {
+        auto seqBegin = startPositions[i];
+        auto seqEnd = startPositions[i + 1];
+        auto firstRow = dropOutMask_->subRowMatrix(seqBegin, seqBegin + 1);
+        firstRow->randomizeUniform();
+        firstRow->biggerThanScalar(config_.drop_rate());
+        for (size_t j = seqBegin + 1; j < seqEnd; ++j) {
+          auto nextRow = dropOutMask_->subRowMatrix(j, j + 1);
+          nextRow->copyFrom(*firstRow);
+        }
+      }
+    } else {
+      dropOutMask_->randomizeUniform();  // generate a uniform random matrix
+      dropOutMask_->biggerThanScalar(config_.drop_rate());  // random mask
+    }
+
+    // std::ostringstream os;
+    // dropOutMask_->print(os);
+    // LOG(INFO) << "Dropout mask: " << os.str();
     outV->dotMul(*outV, *dropOutMask_);                   // dropout
   } else if (passType_ == PASS_GC) {
     // only initialize once

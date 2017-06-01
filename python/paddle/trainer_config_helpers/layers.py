@@ -324,6 +324,7 @@ class LayerOutput(object):
 ERROR_CLIPPING = 'error_clipping_threshold'
 DROPOUT = 'drop_rate'
 DEVICE = 'device'
+SHARE_DROPOUT_MASK_IN_SEQ = 'share_dropout_mask_in_seq'
 
 
 def layer_support(*attrs):
@@ -2655,6 +2656,7 @@ def sum_to_one_norm_layer(input, name=None, layer_attr=None):
 @wrap_act_default(act=LinearActivation())
 @wrap_bias_attr_default(has_bias=False)
 @layer_support(DROPOUT)
+@layer_support(SHARE_DROPOUT_MASK_IN_SEQ)
 def addto_layer(input, act=None, name=None, bias_attr=None, layer_attr=None):
     """
     AddtoLayer.
@@ -4397,7 +4399,6 @@ def selective_fc_layer(input,
         name,
         LayerType.SEL_FC_LAYER,
         output_inputs,
-        list(input) + [select],
         activation=act,
         size=size)
 

@@ -206,6 +206,7 @@ class ExtraLayerAttribute(object):
     def __init__(self,
                  error_clipping_threshold=None,
                  drop_rate=None,
+                 share_dropout_mask_in_seq=False,
                  device=None):
         self.attr = dict()
         if error_clipping_threshold is not None:
@@ -218,6 +219,9 @@ class ExtraLayerAttribute(object):
             if drop_rate < 0:
                 raise ValueError("Dropout rate must > 0")
             self.attr["drop_rate"] = drop_rate
+        
+        if share_dropout_mask_in_seq is not None:
+            self.attr["share_dropout_mask_in_seq"] = share_dropout_mask_in_seq
 
         if isinstance(device, int):
             self.attr["device"] = device
