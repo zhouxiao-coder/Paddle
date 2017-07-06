@@ -37,6 +37,7 @@ __all__ = [
     "identity_projection",
     "dotmul_projection",
     "dotmul_operator",
+    "seqmul_operator",
     "repeat_layer",
     "seq_reshape_layer",
     "table_projection",
@@ -584,6 +585,46 @@ def dotmul_projection(input, param_attr=None):
         input_layer_name=input.name, size=input.size, **param_attr.attr)
     proj.origin = input
     return proj
+
+
+def seqmul_operator(a=None, b=None, scale=1, **kwargs):
+    """
+    DotMulOperator takes two inputs and performs element-wise multiplication:
+
+    .. math::
+       out.row[i] += scale * (a.row[i] .* b.row[i])
+
+    where :math:`.*` means element-wise multiplication, and
+    scale is a config scalar, its default value is one.
+
+    The example usage is:
+
+    .. code-block:: python
+
+       op = dotmul_operator(a=layer1, b=layer2, scale=0.5)
+
+    :param a: Input layer1
+    :type a: LayerOutput
+    :param b: Input layer2
+    :type b: LayerOutput
+    :param scale: config scalar, default value is one.
+    :type scale: float
+    :return: A DotMulOperator Object.
+    :rtype: DotMulOperator
+    """
+    if 'x' in kwargs or 'y' in kwargs:
+        logger.warning('x and y arguments for dotmul_operator is deprecated. '
+                       'Please use a and b as parameter.')
+    a = kwargs.get('x', a)  # For Backward capacity.
+    b = kwargs.get('y', b)
+    assert isinstance(a, LayerOutput)
+    assert isinstance(b, LayerOutput)
+    if a.size is not None and b.size is not None:
+        assert a.size == b.size
+
+    op = SeqMulOperator(input_layer_names=[a.name, b.name], scale=scale)
+    op.origin = [a, b]
+    return op
 
 
 def dotmul_operator(a=None, b=None, scale=1, **kwargs):

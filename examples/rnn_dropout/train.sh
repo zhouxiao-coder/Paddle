@@ -18,5 +18,5 @@ paddle train \
   --show_parameter_stats_period=500 \
   --dot_period=5 \
   --test_period=1000 \
-  --config_args test=0 \
+  --config_args=test=0 \
   2>&1 | tee train_${flag}.log

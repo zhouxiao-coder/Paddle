@@ -38,6 +38,7 @@ words = data_layer(name='word', size=word_dim)
 emb = embedding_layer(input=words, size=hid_size,
                       param_attr=ParamAttr('_embedding', learning_rate=2.0))
 lstm0 = simple_lstm(input=emb, size=hid_size)
+lstm0 = dropout_layer(input=lstm0, dropout_rate=0.2)
 decoder_input = lstm0
 
 true_label = data_layer(name='true_label', size=word_dim)

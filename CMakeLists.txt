@@ -20,6 +20,7 @@ set(PROJ_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 include(system)
 
 project(paddle CXX C Go)
+#project(paddle CXX C)
 
 find_package(Sphinx)
 if(NOT CMAKE_CROSSCOMPILING)

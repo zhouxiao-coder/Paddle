@@ -791,6 +791,27 @@ class DotMulOperator(Operator):
 
 
 @config_class
+class SeqMulOperator(Operator):
+    type = 'seq_mul'
+
+    def __init__(self, input_layer_names, scale=None, **xargs):
+        super(SeqMulOperator, self).__init__(input_layer_names, **xargs)
+        if scale is not None:
+            self.operator_conf.dotmul_scale = scale
+
+        config_assert(len(input_layer_names) == 2, "SeqMul is binary operator")
+
+    def check_dims(self):
+        for i in range(2):
+            config_assert(self.operator_conf.input_sizes[i] ==
+                          self.operator_conf.output_size,
+                          "DotMul input_size != output_size")
+
+    def calc_output_size(self, input_sizes):
+        return input_sizes[0]
+
+
+@config_class
 class ConvOperator(Operator):
     type = 'conv'
 
