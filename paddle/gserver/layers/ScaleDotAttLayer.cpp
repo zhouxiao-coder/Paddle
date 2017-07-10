@@ -33,7 +33,7 @@ namespace paddle {
 
 class ScaleDotAttLayer : public Layer {
 public:
-  explicit ScaleDotAttLayer(const LayerConfig& config) : Layer(config) {}
+  explicit ScaleDotAttLayer(const LayerConfig& config) : Layer(config), _scale(1.0), _mask_strategy(0) {}
 
   ~ScaleDotAttLayer() {}
 
@@ -44,6 +44,8 @@ public:
   void backward(const UpdateCallback& callback = nullptr) override;
 private:
   std::vector<MatrixPtr> _qk_dots;
+  real _scale;
+  int _mask_strategy;
 };
 
 REGISTER_LAYER(scale_dot_att, ScaleDotAttLayer);
@@ -105,6 +107,10 @@ void ScaleDotAttLayer::forward(PassType passType) {
   size_t k_num_sequences = K.getNumSequences(); 
   CHECK(q_num_sequences > 0);
   CHECK_EQ(q_num_sequences, k_num_sequences);
+  int scale = 0;
+  if (scale) {
+    _scale = 1.0f / sqrt(K_val->getWidth());
+  }
 
   for (size_t seq_id = 0; seq_id < q_num_sequences; ++seq_id) {
     size_t q_end_pos = q_start_positions[seq_id + 1];
@@ -117,23 +123,32 @@ void ScaleDotAttLayer::forward(PassType passType) {
 
     auto qk_dot = Matrix::create(q_seq_len, k_seq_len, false, useGpu_);
     // debug_matrix(current_q, "current_q");
-    // debug_matrix(current_k, "current_k");
-    qk_dot->mul(*current_q, *current_k->getTranspose(), 1, 0.0);
+
+    debug_matrix(current_q, "current_q-01");
+    qk_dot->mul(*current_q, *current_k->getTranspose(), _scale, 0.0);
+
+    if (_mask_strategy > 0) {
+      // this simple mask strategy is used only for self-attention
+      CHECK_EQ(q_seq_len, k_seq_len);
+      auto row_mask = Matrix::create(1, q_seq_len, false, useGpu_);
+      for (size_t r = 0; r < q_seq_len - 1; ++r) {
+        auto current_row = qk_dot->subRowMatrix(r, r + 1);
+        // row_mask->resetOne();
+        row_mask->zeroMem();
+        auto masked_pos = Matrix::create(current_row->getData() + r, 1, q_seq_len - r, false, useGpu_);
+        masked_pos->addScalar(*masked_pos, -1e9);
+
+        current_row -> add(*row_mask, 1.0f);
+      }
+     
+    }
+
     // debug_matrix(qk_dot, "first_time_qk_dot");
     // qk_dots.push_back(qk_dot);
     _qk_dots.push_back(qk_dot);
   }  
 
-  // 2. scale 
-  // int scale = config.scale_dot();
-  // switch (scale) {}
-  int scale = 0;
-  if (scale) {
-  }
-
   // 3. mask
-  if (has_mask) {
-  }
 
   // 4. softmax
   for (auto qk_dot: _qk_dots) {
@@ -162,7 +177,7 @@ void ScaleDotAttLayer::forward(PassType passType) {
     // auto att_v = Matrix::create(
     //  qk_dot->getHeight(), V_val->getWidth(), false, useGpu_);
 
-    debug_matrix(qk_dot, "qk_dot");
+    debug_matrix(qk_dot, "qk_dot-2");
     // debug_matrix(current_v->getTranspose(), "current_v");
     att_v->mul(*qk_dot, *current_v, 1, 0.0);
 
@@ -197,7 +212,7 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
   // 1. gradient of V
   auto v_start_positions = V.sequenceStartPositions->getData(false);
   size_t v_num_sequences = V.getNumSequences();
-  size_t current_pos = 0;
+  // size_t current_pos = 0;
   std::vector<MatrixPtr> _qk_dots_grad;
   std::vector<MatrixPtr> _out_grads_t;
 
@@ -214,10 +229,9 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
     auto current_v = V_val->subRowMatrix(v_start_positions[seq_id],
      v_start_positions[seq_id + 1]);
 
-
     // debug_matrix(v_grad_t, "current_v_grad->setOne()");
-    // debug_matrix(qk_dot, "qk_dot_before_mul");
-    MatrixPtr v_grad_t = Matrix::create(current_v_grad->getHeight(), current_v_grad->getWidth(), false, useGpu_);
+    MatrixPtr v_grad_t = Matrix::create(current_v_grad->getWidth(), current_v_grad->getHeight(), false, useGpu_);
+    debug_matrix(out_grad_t, "out_grad_t-3");
     v_grad_t->mul(*out_grad_t, *qk_dot, 1, 0.0);
     debug_matrix(current_v_grad, "current_v_grad->mul");
     v_grad_t->transpose(current_v_grad, false/*memAlloc*/);
@@ -225,9 +239,9 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
 
     auto qk_dot_grad = Matrix::create(qk_dot->getHeight(), qk_dot->getWidth(), false, useGpu_);
     _qk_dots_grad.push_back(qk_dot_grad);
+    debug_matrix(qk_dot_grad, "qk_dot_grad-4");
     qk_dot_grad->mul(*current_v, *out_grad_t, 1, 0.0);
-
-    current_pos += qk_dot->getHeight() * V_val->getWidth();
+    // current_pos += qk_dot->getHeight() * V_val->getWidth();
   }
   // V_grad->addRowScale(0, *out_grad, *V_grad);
   // debug_matrix(V_grad, "V_grad-addRowScale");
@@ -250,10 +264,13 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
         MatrixPtr sftMaxDot = Matrix::create(1, current_row->getWidth(),
          false, useGpu_);
         MatrixPtr sftMaxSum = Matrix::create(1, 1, false, useGpu_);
+        debug_matrix(sftMaxDot, "sftMaxDot-dotMul-5");
         sftMaxDot->dotMul(*current_row_grad, *current_row);
         sftMaxSum->colMerge(*sftMaxDot);
 
         current_row_grad->softmaxDerivative(*current_row, *sftMaxSum);
+        //TODO: check. Seems no difference for the order of appling (scaling) and (mask)
+        current_row_grad->mulScalar(_scale);
       }
     }
 
@@ -277,14 +294,19 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
     auto current_k = K_val->subRowMatrix(k_start_positions[seq_id],
      k_start_positions[seq_id + 1]);
 
+    // MatrixPtr q_grad_t = Matrix::create(current_k->getWidth(), current_q->getHeight(), false, useGpu_);
+    debug_matrix(qk_dot_g, "qk_dot_g-6");
+    current_q_grad->mul(*qk_dot_g, *current_k, 1, 0.0);
+    // q_grad_t->mul(*qk_dot_g, *current_k, 1, 0.0);
+    // q_grad_t->transpose(current_q_grad, false/*memAlloc*/);
 
-    MatrixPtr q_grad_t = Matrix::create(current_q_grad->getHeight(), current_q_grad->getWidth(), false, useGpu_);
-    q_grad_t->mul(*qk_dot_g, *current_k, 1, 0.0);
-    q_grad_t->transpose(current_q_grad, false/*memAlloc*/);
-
-    MatrixPtr k_grad_t = Matrix::create(current_k_grad->getHeight(), current_k_grad->getWidth(), false, useGpu_);
-    k_grad_t->mul(*qk_dot_g, *current_q, 1, 0.0);
-    k_grad_t->transpose(current_k_grad, false/*memAlloc*/);
+    MatrixPtr qk_dot_grad_t;
+    qk_dot_g->transpose(qk_dot_grad_t, true);
+    // debug_matrix(k_grad_t, "k_grad_t-6");
+    debug_matrix(qk_dot_grad_t, "qk_dot_grad_t-7");
+    current_k_grad->mul(*qk_dot_grad_t, *current_q, 1, 0.0);
+    // k_grad_t->mul(*qk_dot_grad_t, *current_q, 1, 0.0);
+    // k_grad_t->transpose(current_k_grad, false/*memAlloc*/);
   }
 
 }
