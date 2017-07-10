@@ -457,6 +457,9 @@ message LayerConfig {
 
   // scale_dot_att scale strategy 
   optional uint32 scale = 58 [default = 0];
+
+  // scale_dot_att mask strategy
+  optional uint32 mask_strategy = 59 [default = 0];
 }
 
 message EvaluatorConfig {

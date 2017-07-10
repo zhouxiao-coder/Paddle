@@ -1873,20 +1873,28 @@ def scaling_layer(input, weight, name=None, layer_attr=None):
     return LayerOutput(
         name, LayerType.SCALING_LAYER, parents=[weight, input], size=input.size)
 
+
 @wrap_name_default()
 @layer_support()
-def scale_dot_att_layer(q, k, v, mask=None, scale_strategy=0, name=None, layer_attr=None):
+def scale_dot_att_layer(q, k, v, 
+    mask=None, scale_strategy=None, mask_strategy=None, name=None, layer_attr=None):
     """
     """
+    inputs = [q, k, v]
+    if mask is not None:
+        assert isinstance(mask, LayerOutput)
+        inputs.append(mask)
+
     Layer(
         name=name,
         type=LayerType.SCALE_DOT_ATT_LAYER,
         inputs=[q.name, k.name, v.name],
+        scale_strategy=scale_strategy,
+        mask_strategy=mask_strategy,
         **ExtraAttr.to_kwargs(layer_attr))
     return LayerOutput(
         name, LayerType.SCALE_DOT_ATT_LAYER, parents=[q, k, v],
          size=q.size)
-
 
 
 @wrap_name_default()

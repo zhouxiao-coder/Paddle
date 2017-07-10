@@ -2689,12 +2689,30 @@ class ScalingLayer(LayerBase):
 
 @config_layer('scale_dot_att')
 class ScaleDotAttLayer(LayerBase):
-    def __init__(self, name, inputs, device=None):
+    def __init__(self, name, inputs, device=None, scale_strategy=None, mask_strategy=None):
         super(ScaleDotAttLayer, self).__init__(
             name, 'scale_dot_att', 0, inputs=inputs, device=device)
         config_assert(len(inputs) >= 3, 'ScaleDotAttLayer must have 3+ inputs')
         v_layer = self.get_input_layer(2)
         self.set_layer_size(v_layer.size)
+
+        scale_strategies = {
+            "sqrt_k": 1
+        }
+        mask_strategies = {
+            "default_mask": 1,
+            "customized_mask": 2,
+        }
+
+        config_assert(
+            scale_strategy is None or scale_strategy in scale_strategies, 'invalid scale_strategy')
+        config_assert(
+            mask_strategy is None or mask_strategy in mask_strategies, 'invalid mask_strategy')
+        if mask_strategy == 'customized_mask':
+            raise NotImplementedError
+
+        self.config.scale = 0 if scale_strategy is None else scale_strategies[scale_strategy]
+        self.config.mask_strategy = 0 if mask_strategy is None else mask_strategies[mask_strategy]
 
 
 @config_layer('conv_shift')
