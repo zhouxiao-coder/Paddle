@@ -16,6 +16,7 @@ def hook(setting, **kwargs):
     setting.slots = [
         integer_value_sequence(max_id),
         integer_value_sequence(max_id),
+        integer_value_sequence(max_id),
         integer_value_sequence(max_id)]
 
 
@@ -23,4 +24,4 @@ def hook(setting, **kwargs):
 def process(setting, file_name):
     """ provider function """
     for i in xrange(10):
-        yield [[0, 1, 2, 0], [0, 1, 0, 2], [0, 1, 0, 0]]
+        yield [[0, 1, 2, 0], [0, 1, 0, 2], [0, 0, 1, 2], [0, 1, 0, 0]]

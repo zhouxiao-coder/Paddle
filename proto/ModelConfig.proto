@@ -454,6 +454,9 @@ message LayerConfig {
 
   // share dropout mask inside sequence
   optional bool share_dropout_mask_in_seq = 57 [default = false];
+
+  // scale_dot_att scale strategy 
+  optional uint32 scale = 58 [default = 0];
 }
 
 message EvaluatorConfig {

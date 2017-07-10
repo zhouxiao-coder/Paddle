@@ -70,6 +70,7 @@ __all__ = [
     'StaticInput',
     'expand_layer',
     'scaling_layer',
+    'scale_dot_att_layer',
     'scaling_projection',
     'power_layer',
     'interpolation_layer',
@@ -167,6 +168,7 @@ class LayerType(object):
     BILINEAR_INTERP_LAYER = 'bilinear_interp'
     POWER_LAYER = 'power'
     SCALING_LAYER = 'scaling'
+    SCALE_DOT_ATT_LAYER = 'scale_dot_att'
     TRANS_LAYER = 'trans'
     ROTATE_LAYER = 'rotate'
     OUT_PROD_LAYER = 'out_prod'
@@ -619,8 +621,8 @@ def seqmul_operator(a=None, b=None, scale=1, **kwargs):
     b = kwargs.get('y', b)
     assert isinstance(a, LayerOutput)
     assert isinstance(b, LayerOutput)
-    if a.size is not None and b.size is not None:
-        assert a.size == b.size
+    # if a.size is not None and b.size is not None:
+    #     assert a.size == b.size
 
     op = SeqMulOperator(input_layer_names=[a.name, b.name], scale=scale)
     op.origin = [a, b]
@@ -1870,6 +1872,21 @@ def scaling_layer(input, weight, name=None, layer_attr=None):
         **ExtraAttr.to_kwargs(layer_attr))
     return LayerOutput(
         name, LayerType.SCALING_LAYER, parents=[weight, input], size=input.size)
+
+@wrap_name_default()
+@layer_support()
+def scale_dot_att_layer(q, k, v, mask=None, scale_strategy=0, name=None, layer_attr=None):
+    """
+    """
+    Layer(
+        name=name,
+        type=LayerType.SCALE_DOT_ATT_LAYER,
+        inputs=[q.name, k.name, v.name],
+        **ExtraAttr.to_kwargs(layer_attr))
+    return LayerOutput(
+        name, LayerType.SCALE_DOT_ATT_LAYER, parents=[q, k, v],
+         size=q.size)
+
 
 
 @wrap_name_default()

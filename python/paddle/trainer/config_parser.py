@@ -802,13 +802,14 @@ class SeqMulOperator(Operator):
         config_assert(len(input_layer_names) == 2, "SeqMul is binary operator")
 
     def check_dims(self):
-        for i in range(2):
-            config_assert(self.operator_conf.input_sizes[i] ==
-                          self.operator_conf.output_size,
-                          "DotMul input_size != output_size")
+        pass
+        # for i in range(2):
+        #     config_assert(self.operator_conf.input_sizes[i] ==
+        #                   self.operator_conf.output_size,
+        #                   "DotMul input_size != output_size")
 
     def calc_output_size(self, input_sizes):
-        return input_sizes[0]
+        return 1
 
 
 @config_class
@@ -2684,6 +2685,16 @@ class ScalingLayer(LayerBase):
         input_layer0 = self.get_input_layer(0)
         config_assert(1 == input_layer0.size,
                       'The left input should be of size 1')
+
+
+@config_layer('scale_dot_att')
+class ScaleDotAttLayer(LayerBase):
+    def __init__(self, name, inputs, device=None):
+        super(ScaleDotAttLayer, self).__init__(
+            name, 'scale_dot_att', 0, inputs=inputs, device=device)
+        config_assert(len(inputs) >= 3, 'ScaleDotAttLayer must have 3+ inputs')
+        v_layer = self.get_input_layer(2)
+        self.set_layer_size(v_layer.size)
 
 
 @config_layer('conv_shift')
