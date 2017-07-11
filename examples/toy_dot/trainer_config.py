@@ -26,23 +26,36 @@ settings(
 
 #################### Network Config ######################
 emb_size = 24
-max_id = 3
+max_id = 10
 
-q = data_layer(name='q', size=max_id)
-k = data_layer(name='k', size=max_id)
-v = data_layer(name='v', size=max_id)
-target = data_layer(name='target', size=max_id)
+src_word = data_layer(name='src_word', size=max_id)
+src_pos = data_layer(name='src_pos', size=max_id)
+trg_word = data_layer(name='trg_word', size=max_id)
+trg_pos = data_layer(name='trg_pos', size=max_id)
+trg_next_word = data_layer(name='trg_next_word', size=max_id)
+#trg_next_pos = data_layer(name='trg_next_pos', size=max_id)
 
-emb_para = ParamAttr('_embedding_rand',
- is_static=False
+emb_para = ParamAttr('_embedding_mid',
+ is_static=True
  )
 
-q_emb = embedding_layer(name='q_emb', input=q, size=emb_size,
+pos_emb_para = ParamAttr('_pos_embedding_mid',
+ is_static=True
+ )
+
+src_emb = embedding_layer(name='src_emb', input=src_word, size=emb_size,
                     param_attr=emb_para)
-k_emb = embedding_layer(name='k_emb', input=k, size=emb_size,
+src_pos_emb = embedding_layer(name='src_pos_emb', input=src_pos, size=emb_size,
+                    param_attr=pos_emb_para)
+trg_emb = embedding_layer(name='trg_emb', input=trg_word, size=emb_size,
                     param_attr=emb_para)
-v_emb = embedding_layer(name='v_emb', input=v, size=emb_size,
+trg_pos_emb = embedding_layer(name='trg_pos_emb', input=trg_pos, size=emb_size,
+                    param_attr=pos_emb_para)
+
+trg_next_emb = embedding_layer(name='trg_next_emb', input=trg_next_word, size=emb_size,
                     param_attr=emb_para)
+# trg_next_pos_emb = embedding_layer(name='trg_next_pos_emb', input=trg_next_pos, size=emb_size,
+#                     param_attr=pos_emb_para)
 
 def multihead_attention(ipt, num_heads, head_size, prefix, kv_ipt=None, mask=None):
     head_atts = []
@@ -76,8 +89,9 @@ def encoder_layer(ipt, prefix):
     )
     return residual_fn(att, att_fc, drop_rate)
 
-encode_layer_num = 3
-encoder_out = q_emb
+encode_layer_num = 1
+#encoder_out = q_emb
+encoder_out = addto_layer(input=[src_emb, src_pos_emb])
 for i in xrange(encode_layer_num):
     prefix = 'encoder_%d' % i
     encoder_out = encoder_layer(encoder_out, prefix)
@@ -88,16 +102,17 @@ def decoder_layer(decode_ipt, encode_out, prefix, mask=None):
     last_step = multihead_attention(decode_ipt, num_heads, head_size, prefix + '_decode_att')
     last_step = residual_fn(decode_ipt, last_step, drop_rate)
 
-    att = multihead_attention(last_step, num_heads, head_size, prefix + '_encode_decode_att',
-     kv_ipt=encode_out, mask=mask)
+    att = multihead_attention(last_step, num_heads, head_size, prefix + '_encode_decode_att', 
+    kv_ipt=encode_out, mask=None)
     att = residual_fn(last_step, att, drop_rate)
 
     att_fc = fc_layer(input=att, size=att.size)
     return residual_fn(att, att_fc, drop_rate)
 
 
-decode_layer_num = 3
-decoder_out = k_emb
+decode_layer_num = 1
+#decoder_out = k_emb
+decoder_out = addto_layer(input=[trg_emb, trg_pos_emb])
 for i in xrange(decode_layer_num):
     prefix = 'decoder_%d' % i
     mask = "default_mask" if i == 0 else None
@@ -105,24 +120,8 @@ for i in xrange(decode_layer_num):
 
 print_layer(decoder_out)
 prediction = fc_layer(decoder_out, size=max_id, act=SoftmaxActivation())
-#print_layer(q_emb)
-#print_layer(k_emb)
-
-#with mixed_layer(name='dot_out', size=1,
-#        #act=SequenceSoftmaxActivation()
-#        ) as dot_out:
-#    #dot_out += dotmul_operator(a=q_emb, b=k_emb)
-#    dot_out += seqmul_operator(a=q_emb, b=k_emb)
-#print_layer(dot_out)
-#fake2 = fc_layer(input=dot_out, size=max_id, act=SoftmaxActivation())
-#for name in [q_emb, k_emb, v_emb]:
-#    print_layer(name)
-#fake2 = scale_dot_att_layer(q_emb, k_emb, v_emb)
-#print_layer(fake2)
-
-#fake_out = fc_layer(input=k_emb, size=max_id, act=SoftmaxActivation())
-cls = classification_cost(input=prediction, label=target)
+cls = classification_cost(input=prediction, label=trg_next_word)
 sum_evaluator(input=cls)
 
-inputs(q, k, v, target)
+inputs(src_word, src_pos, trg_word, trg_pos, trg_next_word)
 outputs(cls)
