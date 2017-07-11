@@ -56,48 +56,32 @@ bool ScaleDotAttLayer::init(const LayerMap& layerMap,
 
   // required: q, k, v. Optional: mask
   CHECK_GE(inputLayers_.size(), 3U);
+  _mask_strategy = config_.mask_strategy();
 
   return true;
 }
 
 void ScaleDotAttLayer::forward(PassType passType) {
   Layer::forward(passType);
-
-  /*
-  assume q k v has same dimension (seq_len, dim)
-  0. need a place to store each record's dim(seq_len)
-  1. q matmul k.
-    - intermediate results, contains batch_size small matrix, each seq_len_x * seq_len_x
-   2. scale step, reads a config to decide how to scale
-   3. mask, check inputs dim, if there is a mask, apply it 
-   4. softmax over each record
-   5. matmu v
-  */
   std::ostringstream os;
   auto debug_matrix = [&os](MatrixPtr m, std::string matrix_name) {
-    LOG(INFO) << "Joe, debug matrix " << matrix_name << "(" << (m->getData()) << "): " \
+    LOG(INFO) << "Joe, forward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
      << m->getHeight() << ":" << m->getWidth();
     m->print(os);
     LOG(INFO) << "Joe, debug matrix " << matrix_name << "(" << (m->getData()) << "): " << os.str();
     LOG(INFO) << "++++++++++++++++++++++++++++++++++";
   };
+
   auto Q = getInput(0);
   auto K = getInput(1);
   auto V = getInput(2);
   MatrixPtr Q_val = getInputValue(0);
   MatrixPtr K_val = getInputValue(1);
   MatrixPtr V_val = getInputValue(2);
-  MatrixPtr mask_val = nullptr;
-  bool has_mask = inputLayers_.size() > 3;
-  if (has_mask) {
-    mask_val = getInputValue(3);
+  if (config_.scale()) {
+    _scale = 1.0f / sqrt(K_val->getWidth());
   }
-
   reserveOutput(Q_val->getHeight(), V_val->getWidth());
-  // LOG(INFO) << "Joe: in SeqMul, v1 shape=" << v1->getWidth() << "," \
-  //   << v1->getHeight() << "," << v1->getStride() << "," << v1->getElementCnt();
-  // LOG(INFO) << "Joe: in SeqMul, transposed v2.t() shape=" << v2t->getWidth() << "," \
-  //   << v2t->getHeight() << "," << v2t->getStride() << "," << v2t->getElementCnt();
 
   // 1. q matmul k
   // std::vector<MatrixPtr> qk_dots;
@@ -107,10 +91,6 @@ void ScaleDotAttLayer::forward(PassType passType) {
   size_t k_num_sequences = K.getNumSequences(); 
   CHECK(q_num_sequences > 0);
   CHECK_EQ(q_num_sequences, k_num_sequences);
-  int scale = 0;
-  if (scale) {
-    _scale = 1.0f / sqrt(K_val->getWidth());
-  }
 
   for (size_t seq_id = 0; seq_id < q_num_sequences; ++seq_id) {
     size_t q_end_pos = q_start_positions[seq_id + 1];
@@ -122,7 +102,6 @@ void ScaleDotAttLayer::forward(PassType passType) {
     auto current_k = K_val->subRowMatrix(k_start_positions[seq_id], k_end_pos);
 
     auto qk_dot = Matrix::create(q_seq_len, k_seq_len, false, useGpu_);
-    // debug_matrix(current_q, "current_q");
 
     debug_matrix(current_q, "current_q-01");
     qk_dot->mul(*current_q, *current_k->getTranspose(), _scale, 0.0);
@@ -140,17 +119,12 @@ void ScaleDotAttLayer::forward(PassType passType) {
 
         current_row -> add(*row_mask, 1.0f);
       }
-     
     }
-
     // debug_matrix(qk_dot, "first_time_qk_dot");
-    // qk_dots.push_back(qk_dot);
     _qk_dots.push_back(qk_dot);
   }  
 
-  // 3. mask
-
-  // 4. softmax
+  // 2. softmax
   for (auto qk_dot: _qk_dots) {
     size_t q_num = qk_dot->getHeight();
     for (size_t r = 0; r < q_num; ++r) {
@@ -173,12 +147,8 @@ void ScaleDotAttLayer::forward(PassType passType) {
      v_start_positions[seq_id + 1]);
     auto att_v = Matrix::create(output_val->getData() + current_pos,
      qk_dot->getHeight(), V_val->getWidth(), false, useGpu_);
-    // LOG(INFO) << "Joe: creating outside att_v";
-    // auto att_v = Matrix::create(
-    //  qk_dot->getHeight(), V_val->getWidth(), false, useGpu_);
 
     debug_matrix(qk_dot, "qk_dot-2");
-    // debug_matrix(current_v->getTranspose(), "current_v");
     att_v->mul(*qk_dot, *current_v, 1, 0.0);
 
     current_pos += qk_dot->getHeight() * V_val->getWidth();
@@ -199,15 +169,12 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
   MatrixPtr K_val = getInputValue(1);
   MatrixPtr V_val = getInputValue(2);
 
-  bool has_mask = inputLayers_.size() > 3;
-
   std::ostringstream os;
   auto debug_matrix = [&os](MatrixPtr m, std::string matrix_name) {
-    LOG(INFO) << "Joe, in backward " << matrix_name << "(" << (m->getData()) << "): " \
+    LOG(INFO) << "Joe, backward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
      << m->getHeight() << ":" << m->getWidth() << ":" << m->isTransposed();
     m->print(os);
     LOG(INFO) << "Joe, debug matrix " << matrix_name << "(" << (m->getData()) << "): " << os.str();
-
   };
   // 1. gradient of V
   auto v_start_positions = V.sequenceStartPositions->getData(false);
@@ -272,15 +239,6 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
         //TODO: check. Seems no difference for the order of appling (scaling) and (mask)
         current_row_grad->mulScalar(_scale);
       }
-    }
-
-    // mask 
-    if (has_mask) {
-
-    }
-    // scale
-    int scale = 0;
-    if (scale) {
     }
  
   // finally, gradient of q and k
