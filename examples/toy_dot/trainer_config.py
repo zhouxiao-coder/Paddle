@@ -27,6 +27,9 @@ settings(
 #################### Network Config ######################
 emb_size = 24
 max_id = 10
+num_heads = 4
+head_size = 6
+drop_rate = 0.1
 
 src_word = data_layer(name='src_word', size=max_id)
 src_pos = data_layer(name='src_pos', size=max_id)
@@ -73,19 +76,15 @@ def multihead_attention(ipt, num_heads, head_size, prefix, kv_ipt=None, mask=Non
 
 def residual_fn(x, y, drop_rate):
     # TODO: correct dropout config
-    #y = dropout_layer(y, dropout_rate=drop_rate, share_dropout_mask_in_seq=False)
+    y = dropout_layer(y, dropout_rate=drop_rate, share_dropout_mask_in_seq=False)
     z = x + y
     return batch_norm_layer(input=z)
 
-
-num_heads = 4
-head_size = 6
-drop_rate = 0.1
 def encoder_layer(ipt, prefix):
     att = multihead_attention(ipt, num_heads, head_size, prefix)
     att = residual_fn(ipt, att, drop_rate)
     att_fc = fc_layer(input=att, size=att.size,
-    #layer_attr=ExtraAttr(drop_rate=drop_rate)
+    layer_attr=ExtraAttr(drop_rate=drop_rate)
     )
     return residual_fn(att, att_fc, drop_rate)
 
@@ -99,7 +98,7 @@ print_layer(encoder_out)
 
 # decoder
 def decoder_layer(decode_ipt, encode_out, prefix, mask=None):
-    last_step = multihead_attention(decode_ipt, num_heads, head_size, prefix + '_decode_att')
+    last_step = multihead_attention(decode_ipt, num_heads, head_size, prefix + '_decode_att', mask=mask)
     last_step = residual_fn(decode_ipt, last_step, drop_rate)
 
     att = multihead_attention(last_step, num_heads, head_size, prefix + '_encode_decode_att', 

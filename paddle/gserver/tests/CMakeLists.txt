@@ -26,11 +26,19 @@ add_test(NAME test_CRFLayerGrad
     COMMAND test_CRFLayerGrad)
 
 
-add_unittest_without_exec(test_ActivationGrad
+add_unittest_without_exec(test_ActivationGad
     test_ActivationGrad.cpp
     LayerGradUtil.cpp)
 add_test(NAME test_ActivationGrad
     COMMAND test_ActivationGrad)
+
+################ test_ScaleDotAttLayer ####################
+add_unittest_without_exec(test_ScaleDotAttLayer
+    test_ScaleDotAttLayer.cpp
+    LayerGradUtil.cpp)
+add_test(NAME test_ScaleDotAttLayer
+    COMMAND test_ScaleDotAttLayer)
+
 ################# test_ConvTrans #######################
 add_unittest_without_exec(test_ConvTrans
     test_ConvTrans.cpp

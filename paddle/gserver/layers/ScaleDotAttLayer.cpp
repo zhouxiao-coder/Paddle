@@ -78,13 +78,15 @@ void ScaleDotAttLayer::forward(PassType passType) {
     - scale out is 6 * 6
   */
   Layer::forward(passType);
-  // std::ostringstream os;
-  // auto debug_matrix = [&os](MatrixPtr m, std::string matrix_name) {
-  //   LOG(INFO) << "Joe, forward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
-  //    << m->getHeight() << ":" << m->getWidth();
-  //   m->print(os);
-  //   LOG(INFO) << "++++++++++++++++++++++++++++++++++";
-  // };
+  std::ostringstream os;
+  auto debug_matrix = [&os](MatrixPtr m, std::string matrix_name) {
+    LOG(INFO) << "Joe, forward pass\n" << matrix_name << ": " \
+     << m->getHeight() << ":" << m->getWidth();
+    // LOG(INFO) << "Joe, forward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
+    //  << m->getHeight() << ":" << m->getWidth();
+    m->print(os);
+    LOG(INFO) << os.str() << "\n++++++++++++++++++++++++++++++++++";
+  };
 
   auto Q = getInput(0);
   auto K = getInput(1);
@@ -108,6 +110,8 @@ void ScaleDotAttLayer::forward(PassType passType) {
   CHECK_EQ(v_num_sequences, k_num_sequences);
   CHECK_EQ(q_num_sequences, k_num_sequences);
 
+  _qk_dots.clear();
+
   // 1. q matmul k
   for (size_t seq_id = 0; seq_id < q_num_sequences; ++seq_id) {
     size_t q_end_pos = q_start_positions[seq_id + 1];
@@ -119,7 +123,11 @@ void ScaleDotAttLayer::forward(PassType passType) {
     auto current_k = K_val->subRowMatrix(k_start_positions[seq_id], k_end_pos);
 
     auto qk_dot = Matrix::create(q_seq_len, k_seq_len, false, useGpu_);
-    // debug_matrix(current_q, "current_q-01");
+    if (current_q->getWidth() != current_k->getWidth()) {
+      debug_matrix(current_q, "current_q-01");
+      debug_matrix(current_k, "current_k-02");
+      debug_matrix(qk_dot, "qk_dot-02");
+    }
     qk_dot->mul(*current_q, *current_k->getTranspose(), _scale, 0.0);
 
     for (size_t r = 0; r < q_seq_len; ++r) {
@@ -141,6 +149,8 @@ void ScaleDotAttLayer::forward(PassType passType) {
     _qk_dots.push_back(qk_dot);
   }  
 
+  CHECK_EQ(_qk_dots.size(), v_num_sequences);
+
   // 5. qk_dot matmul v
   size_t current_pos = 0;
   for (size_t seq_id = 0; seq_id < v_num_sequences; ++seq_id) {
@@ -150,9 +160,13 @@ void ScaleDotAttLayer::forward(PassType passType) {
     auto att_v = Matrix::create(output_val->getData() + current_pos,
      qk_dot->getHeight(), V_val->getWidth(), false, useGpu_);
 
+    if (qk_dot->getWidth() != current_v->getHeight()) {
+      debug_matrix(qk_dot, "qk_dot-03");
+      debug_matrix(current_v, "current_v-04");
+      debug_matrix(att_v, "att_v-04");
+    }
     att_v->mul(*qk_dot, *current_v, 1, 0.0);
-    // debug_matrix(att_v, "att_v-2");
-
+    // debug_matrix(att_v, "att_v-04");
     current_pos += qk_dot->getHeight() * V_val->getWidth();
   }
 }
@@ -211,18 +225,25 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
 
   std::ostringstream os;
   auto debug_matrix = [&os](MatrixPtr m, std::string matrix_name) {
-    LOG(INFO) << "Joe, backward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
+    LOG(INFO) << "Joe, check_test backward pass\n" << matrix_name << "(" << (m->getData()) << "): " \
      << m->getHeight() << ":" << m->getWidth() << ":" << m->isTransposed();
     m->print(os);
+    LOG(INFO) << os.str() << "\n++++++++++++++++++++++++++++++++++";
   };
   int debug_count = 0;
   auto debug_point = [&debug_count](int pos) {
     LOG(INFO) << "Joe, backward pass debug point [" << debug_count++ << "]=" << pos;
   };
 
-  debug_matrix(out_grad, "output_gradient");
+  bool debug_flag = false;
+  if (debug_flag) {
+    //Joe: for gradient checking
+    out_grad->resetOne();
+    debug_point(0);
+    debug_matrix(out_grad, "output_gradient");
+    LOG(INFO) << "Joe: backward reset gradient to check";
+  }
   // 1. gradient of V
-  // size_t current_pos = 0;
   std::vector<MatrixPtr> _qk_dots_grad;
   for (size_t seq_id = 0; seq_id < v_num_sequences; ++seq_id) {
     // output gradient
@@ -236,25 +257,15 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
     auto current_v = V_val->subRowMatrix(v_start_positions[seq_id],
      v_start_positions[seq_id + 1]);
 
-    debug_point(0);
     current_v_grad->mul(*qk_dot->getTranspose(), *current_out_grad);
-
-    // MatrixPtr v_grad_t = Matrix::create(current_v_grad->getWidth(), current_v_grad->getHeight(), false, useGpu_);
-    // debug_matrix(out_grad_t, "out_grad_t-3");
-    // v_grad_t->mul(*out_grad_t, *qk_dot, 1, 0.0);
-    // debug_matrix(current_v_grad, "current_v_grad->mul");
-    // v_grad_t->transpose(current_v_grad, false/*memAlloc*/);
+    // debug_matrix(current_v_grad, "v_grad");
 
     auto qk_dot_grad = Matrix::create(qk_dot->getHeight(), qk_dot->getWidth(), false, useGpu_);
     _qk_dots_grad.push_back(qk_dot_grad);
     // debug_matrix(qk_dot_grad, "qk_dot_grad-4");
-    // qk_dot_grad->mul(*current_v, *out_grad_t, 1, 0.0);
-    debug_point(1);
     qk_dot_grad->mul(*current_out_grad, *current_v->getTranspose(), 1, 0.0);
-    // current_pos += qk_dot->getHeight() * V_val->getWidth();
+    // debug_matrix(qk_dot_grad, "qk_dot_grad");
   }
-  // V_grad->addRowScale(0, *out_grad, *V_grad);
-  // debug_matrix(V_grad, "V_grad-addRowScale");
 
   // 2. gradient of k, q
   for (size_t seq_id = 0; seq_id < v_num_sequences; ++seq_id) {
@@ -272,8 +283,7 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
         MatrixPtr sftMaxDot = Matrix::create(1, current_row->getWidth(),
          false, useGpu_);
         MatrixPtr sftMaxSum = Matrix::create(1, 1, false, useGpu_);
-        debug_matrix(sftMaxDot, "sftMaxDot-dotMul-5");
-        debug_point(2);
+        // debug_matrix(sftMaxDot, "sftMaxDot-dotMul-5");
         sftMaxDot->dotMul(*current_row_grad, *current_row);
         sftMaxSum->colMerge(*sftMaxDot);
 
@@ -282,6 +292,8 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
         current_row_grad->mulScalar(_scale);
       }
     }
+
+    // debug_matrix(qk_dot_g, "qk_dot_pre_grad");
  
     // finally, gradient of q and k
     auto current_q_grad = Q_grad->subRowMatrix(q_start_positions[seq_id],
@@ -294,23 +306,11 @@ void ScaleDotAttLayer::backward(const UpdateCallback& callback) {
     auto current_k = K_val->subRowMatrix(k_start_positions[seq_id],
      k_start_positions[seq_id + 1]);
 
-    // MatrixPtr q_grad_t = Matrix::create(current_k->getWidth(), current_q->getHeight(), false, useGpu_);
-    debug_matrix(qk_dot_g, "qk_dot_g-6");
-    debug_point(3);
     current_q_grad->mul(*qk_dot_g, *current_k, 1, 0.0);
-    // q_grad_t->mul(*qk_dot_g, *current_k, 1, 0.0);
-    // q_grad_t->transpose(current_q_grad, false/*memAlloc*/);
+    // debug_matrix(current_q_grad, "q_grad");
 
-    MatrixPtr qk_dot_grad_t;
-    qk_dot_g->transpose(qk_dot_grad_t, true);
-    // debug_matrix(k_grad_t, "k_grad_t-6");
-    debug_matrix(qk_dot_grad_t, "qk_dot_grad_t-7");
-    //TODO: do it without transpose to a temp variable
-    // current_k_grad->mul(*qk_dot_grad_t, *current_q, 1, 0.0);
-    debug_point(4);
     current_k_grad->mul(*qk_dot_g->getTranspose(), *current_q, 1, 0.0);
-    // k_grad_t->mul(*qk_dot_grad_t, *current_q, 1, 0.0);
-    // k_grad_t->transpose(current_k_grad, false/*memAlloc*/);
+    // debug_matrix(current_k_grad, "k_grad");
   }
 
 }
