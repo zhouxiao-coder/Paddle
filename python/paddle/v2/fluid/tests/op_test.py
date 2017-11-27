@@ -8,6 +8,7 @@ from paddle.v2.fluid.backward import append_backward_ops
 from paddle.v2.fluid.op import Operator
 from paddle.v2.fluid.executor import Executor
 from paddle.v2.fluid.framework import Program, OpProtoHolder
+import pdb
 
 
 def randomize_probability(batch_size, class_num, dtype='float32'):
@@ -19,7 +20,7 @@ def randomize_probability(batch_size, class_num, dtype='float32'):
     return prob
 
 
-def create_op(scope, op_type, inputs, outputs, attrs):
+def create_op(scope, op_type, in_place_map, inputs, outputs, attrs):
     kwargs = dict()
 
     def __create_var__(name, var_name):
@@ -37,6 +38,10 @@ def create_op(scope, op_type, inputs, outputs, attrs):
                 __create_var__(in_name, in_name)
 
     for out_name, out_dup in Operator.get_op_outputs(op_type):
+        print "Joe:out_name:", out_name
+        if out_name in in_place_map:
+            kwargs[out_name] = kwargs[in_place_map[out_name]]
+            continue
         if out_name in outputs:
             kwargs[out_name] = []
             if out_dup:
@@ -49,13 +54,16 @@ def create_op(scope, op_type, inputs, outputs, attrs):
     for attr_name in Operator.get_op_attr_names(op_type):
         if attr_name in attrs:
             kwargs[attr_name] = attrs[attr_name]
-
+    print "Joe:grad_check:create_op:kwargs:", kwargs
     return Operator(op_type, **kwargs)
 
 
 def set_input(scope, op, inputs, place):
     def __set_input__(var_name, var):
+        print "Joe:__set_input__:", var_name, "\t", var
         if isinstance(var, tuple) or isinstance(var, np.ndarray):
+            if scope.find_var(var_name) is None:
+                print "Joe: scope cannot find var[{}]".format(var_name)
             tensor = scope.find_var(var_name).get_tensor()
             if isinstance(var, tuple):
                 tensor.set_lod(var[1])
@@ -67,6 +75,7 @@ def set_input(scope, op, inputs, place):
         elif isinstance(var, int):
             scope.find_var(var_name).set_int(var)
 
+    # pdb.set_trace()
     for in_name, in_dup in Operator.get_op_inputs(op.type()):
         if in_name in inputs:
             if in_dup:
@@ -80,6 +89,7 @@ def set_input(scope, op, inputs, place):
 def get_numeric_gradient(scope,
                          op,
                          inputs,
+                         in_place_map,
                          input_to_check,
                          output_names,
                          delta=0.005,
@@ -95,6 +105,7 @@ def get_numeric_gradient(scope,
     def get_output():
         sum = []
         for output_name in output_names:
+            print("Joe:num_grad-output_name=" + output_name)
             op.run(scope, ctx)
             sum.append(
                 np.array(scope.find_var(output_name).get_tensor()).mean())
@@ -151,48 +162,6 @@ def get_numeric_gradient(scope,
     return gradient_flat.reshape(tensor_to_check.get_dims())
 
 
-def append_input_output(block, op_proto, np_list, is_input):
-    '''Insert VarDesc and generate Python variable instance'''
-    proto_list = op_proto.inputs if is_input else op_proto.outputs
-
-    def create_var(block, name, np_list, var_proto):
-        if name not in np_list:
-            assert var_proto.intermediate, "{} not found".format(name)
-            shape = None
-            lod_level = None
-        else:
-            np_value = np_list[name]
-            if isinstance(np_value, tuple):
-                shape = list(np_value[0].shape)
-                lod_level = len(np_value[1])
-            else:
-                shape = list(np_value.shape)
-                lod_level = 0
-        return block.create_var(
-            dtype="float32", shape=shape, lod_level=lod_level, name=name)
-
-    var_dict = {}
-    for var_proto in proto_list:
-        var_name = str(var_proto.name)
-        if is_input:
-            if (var_name not in np_list) and var_proto.dispensable:
-                continue
-            assert (var_name in np_list) or (var_proto.dispensable), \
-                "Missing {} as input".format(var_name)
-        if var_proto.duplicable:
-            assert isinstance(np_list[var_name], list), \
-                "Duplicable {} should be set as list".format(var_name)
-            var_list = []
-            for (name, np_value) in np_list[var_name]:
-                var_list.append(
-                    create_var(block, name, {name: np_value}, var_proto))
-            var_dict[var_name] = var_list
-        else:
-            var_dict[var_name] = create_var(block, var_name, np_list, var_proto)
-
-    return var_dict
-
-
 class OpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -209,8 +178,68 @@ class OpTest(unittest.TestCase):
         np.random.set_state(cls._np_rand_state)
         random.setstate(cls._py_rand_state)
 
-    def feed_var(self, input_vars, place):
+    def init_cache_var(self):
+        self.cached_var = {}
+        if not hasattr(self, "in_place_map"):
+            self.in_place_map = {}
+
+    def get_var(self, block, name, feed_value=None, proto=None):
+        shape = None
+        lod_level = None
+        if feed_value is not None:
+            if isinstance(feed_value, tuple):
+                shape = list(feed_value[0].shape)
+                lod_level = len(feed_value[1])
+            else:
+                shape = list(feed_value.shape)
+                lod_level = 0
+
+        return block.create_var(
+            dtype="float32", shape=shape, lod_level=lod_level, name=name)
+
+    def append_input_output(self, block, op_proto, np_list, is_input):
+        '''Insert VarDesc and generate Python variable instance'''
+        proto_list = op_proto.inputs if is_input else op_proto.outputs
+        var_dict = {}
+        for var_proto in proto_list:
+            var_name = str(var_proto.name)
+            if var_name not in np_list:
+                if var_proto.dispensable and is_input:
+                    continue
+                assert var_proto.dispensable or var_proto.intermediate, "Missing {}".format(
+                    var_name)
+
+            # use linked var
+            if var_name in self.in_place_map:
+                linked_var = self.in_place_map[var_name]
+                if linked_var in self.cached_var:
+                    var_dict[var_name] = self.cached_var[linked_var]
+                    continue
+                var_name = linked_var
+
+            if var_proto.duplicable:
+                assert isinstance(np_list[var_name], list), \
+                    "Duplicable {} should be set as list".format(var_name)
+                var_list = []
+                for (name, np_value) in np_list[var_name]:
+                    var_list.append(
+                        self.get_var(
+                            block, name, feed_value=np_value, proto=var_proto))
+                var_dict[var_name] = var_list
+            else:
+                var_dict[var_name] = self.get_var(
+                    block,
+                    var_name,
+                    feed_value=np_list.get(var_name, None),
+                    proto=var_proto)
+        self.cached_var.update(var_dict)
+        return var_dict
+
+    def feed_var(self, input_vars, input_values, place):
         feed_map = {}
+        if not hasattr(self, 'in_place_map'):
+            self.in_place_map = {}
+
         for var_name in input_vars:
             if isinstance(input_vars[var_name], list):
                 for name, np_value in self.inputs[var_name]:
@@ -223,23 +252,29 @@ class OpTest(unittest.TestCase):
                     feed_map[name] = tensor
             else:
                 tensor = core.LoDTensor()
-                if isinstance(self.inputs[var_name], tuple):
-                    tensor.set(self.inputs[var_name][0], place)
-                    tensor.set_lod(self.inputs[var_name][1])
+                if isinstance(input_values[var_name], tuple):
+                    tensor.set(input_values[var_name][0], place)
+                    tensor.set_lod(input_values[var_name][1])
                 else:
-                    tensor.set(self.inputs[var_name], place)
+                    print 'inputs[var_name]=', self.inputs[var_name]
+                    tensor.set(input_values[var_name], place)
                 feed_map[var_name] = tensor
 
         return feed_map
 
-    def check_output_with_place(self, place, atol):
+    def _compile_op(self, place):
+        # compile time prepare
         op_proto = OpProtoHolder.instance().get_op_proto(self.op_type)
-
         program = Program()
         block = program.global_block()
-
-        inputs = append_input_output(block, op_proto, self.inputs, True)
-        outputs = append_input_output(block, op_proto, self.outputs, False)
+        if not hasattr(self, 'in_place_map'):
+            self.in_place_map = {}
+        inputs = self.append_input_output(
+            block, op_proto, self.inputs, is_input=True)
+        outputs = self.append_input_output(
+            block, op_proto, self.outputs, is_input=False)
+        # inputs = append_input_output(block, op_proto, self.inputs, self.in_place_map, {}, True)
+        # outputs = append_input_output(block, op_proto, self.outputs, self.in_place_map, inputs, False)
         op = block.append_op(
             type=self.op_type,
             inputs=inputs,
@@ -249,6 +284,10 @@ class OpTest(unittest.TestCase):
         op.desc.infer_var_type(block.desc)
         op.desc.infer_shape(block.desc)
 
+        return program, op, inputs, outputs
+
+    def _prepare_input_output(self, place, inputs, outputs):
+        # prepare input and output of operator
         fetch_list = []
         for var_name, var in outputs.iteritems():
             if var_name in self.outputs:
@@ -257,17 +296,21 @@ class OpTest(unittest.TestCase):
                         fetch_list.append(v)
                 else:
                     fetch_list.append(var)
+        feed_map = self.feed_var(inputs, self.inputs, place)
+        return fetch_list, feed_map
 
-        feed_map = self.feed_var(inputs, place)
-
+    def _execute(self, place, program, feed_map, fetch_list):
         exe = Executor(place)
-        outs = exe.run(program, feed=feed_map, fetch_list=fetch_list)
+        return exe.run(program, feed=feed_map, fetch_list=fetch_list)
 
+    def _compare_results(self, place, outs, fetch_list, atol):
         for out_name, out_dup in Operator.get_op_outputs(self.op_type):
             if out_name not in self.outputs:
                 continue
 
             def find_actual(target_name, fetch_list):
+                if target_name in self.in_place_map:
+                    target_name = self.in_place_map[target_name]
                 found = [
                     i for i, var in enumerate(fetch_list)
                     if var.name == target_name
@@ -312,6 +355,14 @@ class OpTest(unittest.TestCase):
                                          "Output (" + out_name +
                                          ") has different lod at " + str(place))
 
+    def check_output_with_place(self, place, atol):
+        self.init_cache_var()
+        program, op, inputs, outputs = self._compile_op(place)
+        fetch_list, feed_map = self._prepare_input_output(place, inputs,
+                                                          outputs)
+        outs = self._execute(place, program, feed_map, fetch_list)
+        self._compare_results(place, outs, fetch_list, atol)
+
     def check_output(self, atol=1e-5):
         places = [core.CPUPlace()]
         if core.is_compile_gpu() and core.op_support_gpu(self.op_type):
@@ -346,12 +397,17 @@ class OpTest(unittest.TestCase):
                    in_place=False,
                    max_relative_error=0.005,
                    user_defined_grads=None):
+        self.init_cache_var()
         self.scope = core.Scope()
         op_inputs = self.inputs if hasattr(self, "inputs") else dict()
         op_outputs = self.outputs if hasattr(self, "outputs") else dict()
         op_attrs = self.attrs if hasattr(self, "attrs") else dict()
-        self.op = create_op(self.scope, self.op_type, op_inputs, op_outputs,
-                            op_attrs)
+        if not hasattr(self, 'in_place_map'):
+            self.in_place_map = {}
+        self.op = create_op(self.scope, self.op_type, self.in_place_map,
+                            op_inputs, op_outputs, op_attrs)
+        # program, op, inputs, outputs = self._compile_op(core.CPUPlace())
+        # self.op = op
 
         if no_grad_set is None:
             no_grad_set = set()
@@ -364,6 +420,7 @@ class OpTest(unittest.TestCase):
                 self.scope,
                 self.op,
                 self.inputs,
+                self.in_place_map,
                 input_to_check,
                 output_names,
                 delta=numeric_grad_delta,
@@ -387,8 +444,24 @@ class OpTest(unittest.TestCase):
                                    "Gradient Check On %s" % str(gpu_place))
 
     @staticmethod
-    def _create_var_descs_(block, var_dict):
+    def _create_var_descs_(block,
+                           var_dict,
+                           in_place_map={},
+                           input_vars={},
+                           cached_vars={}):
         # FIXME: Try unify with `append_input_output`
+        def create_or_reuse_var(name, shape, dtype):
+            print "Joe:create_or_reuse_var:" + name
+            if name not in in_place_map:
+                var = block.create_var(name=name, shape=shape, dtype=dtype)
+            else:
+                print "Joe:reuse_var:" + name
+                var = cached_vars[in_place_map[name]]
+                # var = input_vars[in_place_map[name]]
+
+            cached_vars[name] = var
+            return var
+
         for param_name in var_dict:
             var = var_dict[param_name]
             if not isinstance(var, list) and not isinstance(var, tuple):
@@ -405,7 +478,8 @@ class OpTest(unittest.TestCase):
                     else:
                         # only set var name and value, set lod to None
                         var[i] = list(item) + [None]
-            var_descs = [(block.create_var(
+            # var_descs = [(block.create_var(
+            var_descs = [(create_or_reuse_var(
                 name=name, shape=each.shape, dtype=each.dtype), each, lod)
                          for name, each, lod in var]
 
@@ -426,15 +500,20 @@ class OpTest(unittest.TestCase):
     def _get_gradient(self, input_to_check, place, output_names, no_grad_set):
         prog = Program()
         block = prog.global_block()
+        cached_vars = {}
         inputs_with_np = {
             key: value
             for (key, value) in OpTest._create_var_descs_(
-                block, getattr(self, 'inputs', {}))
+                block, getattr(self, 'inputs', {}), cached_vars=cached_vars)
         }
         outputs_with_np = {
             key: val
             for (key, val) in OpTest._create_var_descs_(
-                block, getattr(self, 'outputs', {}))
+                block,
+                getattr(self, 'outputs', {}),
+                in_place_map=self.in_place_map,
+                input_vars=inputs_with_np,
+                cached_vars=cached_vars)
         }
         inputs = {
             k: [item[0] for item in inputs_with_np[k]]
@@ -444,7 +523,7 @@ class OpTest(unittest.TestCase):
             k: [item[0] for item in outputs_with_np[k]]
             for k in outputs_with_np
         }
-
+        print "Joe:_get_gradient:before_append_op:inputs=", inputs, '\toutputs=', outputs
         op = block.append_op(
             type=self.op_type,
             inputs=inputs,
