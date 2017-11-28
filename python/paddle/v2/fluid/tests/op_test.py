@@ -20,148 +20,6 @@ def randomize_probability(batch_size, class_num, dtype='float32'):
     return prob
 
 
-def create_op(scope, op_type, in_place_map, inputs, outputs, attrs):
-    kwargs = dict()
-
-    def __create_var__(name, var_name):
-        scope.var(var_name).get_tensor()
-        kwargs[name].append(var_name)
-
-    for in_name, in_dup in Operator.get_op_inputs(op_type):
-        if in_name in inputs:
-            kwargs[in_name] = []
-            if in_dup:
-                sub_in = inputs[in_name]
-                for sub_in_name, _ in sub_in:
-                    __create_var__(in_name, sub_in_name)
-            else:
-                __create_var__(in_name, in_name)
-
-    for out_name, out_dup in Operator.get_op_outputs(op_type):
-        print "Joe:out_name:", out_name
-        if out_name in in_place_map:
-            kwargs[out_name] = kwargs[in_place_map[out_name]]
-            continue
-        if out_name in outputs:
-            kwargs[out_name] = []
-            if out_dup:
-                sub_out = outputs[out_name]
-                for sub_out_name, _ in sub_out:
-                    __create_var__(out_name, sub_out_name)
-            else:
-                __create_var__(out_name, out_name)
-
-    for attr_name in Operator.get_op_attr_names(op_type):
-        if attr_name in attrs:
-            kwargs[attr_name] = attrs[attr_name]
-    print "Joe:grad_check:create_op:kwargs:", kwargs
-    return Operator(op_type, **kwargs)
-
-
-def set_input(scope, op, inputs, place):
-    def __set_input__(var_name, var):
-        print "Joe:__set_input__:", var_name, "\t", var
-        if isinstance(var, tuple) or isinstance(var, np.ndarray):
-            if scope.find_var(var_name) is None:
-                print "Joe: scope cannot find var[{}]".format(var_name)
-            tensor = scope.find_var(var_name).get_tensor()
-            if isinstance(var, tuple):
-                tensor.set_lod(var[1])
-                var = var[0]
-            tensor.set_dims(var.shape)
-            tensor.set(var, place)
-        elif isinstance(var, float):
-            scope.find_var(var_name).set_float(var)
-        elif isinstance(var, int):
-            scope.find_var(var_name).set_int(var)
-
-    # pdb.set_trace()
-    for in_name, in_dup in Operator.get_op_inputs(op.type()):
-        if in_name in inputs:
-            if in_dup:
-                sub_in = inputs[in_name]
-                for sub_in_name, sub_in_val in sub_in:
-                    __set_input__(sub_in_name, sub_in_val)
-            else:
-                __set_input__(in_name, inputs[in_name])
-
-
-def get_numeric_gradient(scope,
-                         op,
-                         inputs,
-                         in_place_map,
-                         input_to_check,
-                         output_names,
-                         delta=0.005,
-                         in_place=False):
-    # FIXME: change this method by compile time concepts
-    set_input(scope, op, inputs, core.CPUPlace())
-
-    def product(dim):
-        return reduce(lambda a, b: a * b, dim, 1)
-
-    ctx = core.DeviceContext.create(core.CPUPlace())
-
-    def get_output():
-        sum = []
-        for output_name in output_names:
-            print("Joe:num_grad-output_name=" + output_name)
-            op.run(scope, ctx)
-            sum.append(
-                np.array(scope.find_var(output_name).get_tensor()).mean())
-        return np.array(sum).mean()
-
-    tensor_to_check = scope.find_var(input_to_check).get_tensor()
-    tensor_size = product(tensor_to_check.get_dims())
-    tensor_to_check_dtype = tensor_to_check.dtype()
-    if tensor_to_check_dtype == core.DataType.FP32:
-        tensor_to_check_dtype = np.float32
-    elif tensor_to_check_dtype == core.DataType.FP64:
-        tensor_to_check_dtype = np.float64
-    else:
-        raise ValueError("Not supported data type " + str(
-            tensor_to_check_dtype))
-
-    gradient_flat = np.zeros(shape=(tensor_size, ), dtype=tensor_to_check_dtype)
-
-    def __get_elem__(tensor, i):
-        if tensor_to_check_dtype == np.float32:
-            return tensor.get_float_element(i)
-        else:
-            return tensor.get_double_element(i)
-
-    def __set_elem__(tensor, i, e):
-        if tensor_to_check_dtype == np.float32:
-            tensor.set_float_element(i, e)
-        else:
-            tensor.set_double_element(i, e)
-
-    # we only compute gradient of one element each time.
-    # we use a for loop to compute the gradient of every element.
-    for i in xrange(tensor_size):
-        if in_place:
-            set_input(scope, op, inputs, core.CPUPlace())
-
-        # get one input element throw it's index i.
-        origin = __get_elem__(tensor_to_check, i)
-        # add delta to it, run op and then get the sum of the result tensor.
-        x_pos = origin + delta
-        __set_elem__(tensor_to_check, i, x_pos)
-        y_pos = get_output()
-
-        if in_place:
-            set_input(scope, op, inputs, core.CPUPlace())
-
-        x_neg = origin - delta
-        __set_elem__(tensor_to_check, i, x_neg)
-        y_neg = get_output()
-
-        __set_elem__(tensor_to_check, i, origin)
-        gradient_flat[i] = (y_pos - y_neg) / delta / 2
-
-    return gradient_flat.reshape(tensor_to_check.get_dims())
-
-
 class OpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -178,12 +36,26 @@ class OpTest(unittest.TestCase):
         np.random.set_state(cls._np_rand_state)
         random.setstate(cls._py_rand_state)
 
-    def init_cache_var(self):
+    def _init_program(self):
+        self.op_proto = OpProtoHolder.instance().get_op_proto(self.op_type)
+        self.program = Program()
+        self.block = self.program.global_block()
+
         self.cached_var = {}
         if not hasattr(self, "in_place_map"):
             self.in_place_map = {}
+        if not hasattr(self, "inputs"):
+            self.inputs = {}
+        if not hasattr(self, "outputs"):
+            self.outputs = {}
+        if not hasattr(self, "attrs"):
+            self.attrs = {}
 
-    def get_var(self, block, name, feed_value=None, proto=None):
+    def _init_var_desc(self, name, feed_value=None, dtype="float32"):
+        block = self.block
+        if block.has_var(name):
+            return block.var(name)
+
         shape = None
         lod_level = None
         if feed_value is not None:
@@ -193,23 +65,30 @@ class OpTest(unittest.TestCase):
             else:
                 shape = list(feed_value.shape)
                 lod_level = 0
-
         return block.create_var(
-            dtype="float32", shape=shape, lod_level=lod_level, name=name)
+            dtype=dtype, shape=shape, lod_level=lod_level, name=name)
 
-    def append_input_output(self, block, op_proto, np_list, is_input):
-        '''Insert VarDesc and generate Python variable instance'''
-        proto_list = op_proto.inputs if is_input else op_proto.outputs
+    def _init_var_descs(self, var_protos, feed_values, is_input):
         var_dict = {}
-        for var_proto in proto_list:
-            var_name = str(var_proto.name)
-            if var_name not in np_list:
+
+        def value_data_type(value):
+            if value is None:
+                return np.float32
+            if isinstance(value, tuple):
+                value = value[0]
+            return value.dtype
+
+        for var_proto in var_protos:
+            var_name = str(
+                var_proto.
+                name)  # name is a unicode object. but this shouldn't matter.
+            if var_name not in feed_values:
                 if var_proto.dispensable and is_input:
                     continue
                 assert var_proto.dispensable or var_proto.intermediate, "Missing {}".format(
                     var_name)
 
-            # use linked var
+            # if it is inplace computation, use the same variable
             if var_name in self.in_place_map:
                 linked_var = self.in_place_map[var_name]
                 if linked_var in self.cached_var:
@@ -218,107 +97,105 @@ class OpTest(unittest.TestCase):
                 var_name = linked_var
 
             if var_proto.duplicable:
-                assert isinstance(np_list[var_name], list), \
+                assert isinstance(feed_values[var_name], list), \
                     "Duplicable {} should be set as list".format(var_name)
-                var_list = []
-                for (name, np_value) in np_list[var_name]:
-                    var_list.append(
-                        self.get_var(
-                            block, name, feed_value=np_value, proto=var_proto))
-                var_dict[var_name] = var_list
+                var_dict[var_name] = [
+                    self._init_var_desc(
+                        name, feed_value=value, dtype=value_data_type(value))
+                    for name, value in feed_values[var_name]
+                ]
             else:
-                var_dict[var_name] = self.get_var(
-                    block,
-                    var_name,
-                    feed_value=np_list.get(var_name, None),
-                    proto=var_proto)
+                value = feed_values.get(var_name, None)
+                var_dict[var_name] = self._init_var_desc(
+                    var_name, feed_value=value, dtype=value_data_type(value))
         self.cached_var.update(var_dict)
         return var_dict
 
-    def feed_var(self, input_vars, input_values, place):
+    def _feed_vars(self, var_descs, var_values, place):
         feed_map = {}
-        if not hasattr(self, 'in_place_map'):
-            self.in_place_map = {}
-
-        for var_name in input_vars:
-            if isinstance(input_vars[var_name], list):
-                for name, np_value in self.inputs[var_name]:
+        assert all([key in var_values for key in var_descs.keys()
+                    ]), "Not all variable are fed with values"
+        for var_name, var_desc in var_descs.iteritems():
+            fed_value = var_values[var_name]
+            if isinstance(var_desc, list):
+                for name, value in fed_value:
                     tensor = core.LoDTensor()
-                    if isinstance(np_value, tuple):
-                        tensor.set(np_value[0], place)
-                        tensor.set_lod(np_value[1])
+                    if isinstance(value, tuple):
+                        tensor.set(value[0], place)
+                        tensor.set_lod(value[1])
                     else:
-                        tensor.set(np_value, place)
+                        tensor.set(value, place)
                     feed_map[name] = tensor
             else:
                 tensor = core.LoDTensor()
-                if isinstance(input_values[var_name], tuple):
-                    tensor.set(input_values[var_name][0], place)
-                    tensor.set_lod(input_values[var_name][1])
+                if isinstance(fed_value, tuple):
+                    tensor.set(fed_value[0], place)
+                    tensor.set_lod(fed_value[1])
                 else:
-                    print 'inputs[var_name]=', self.inputs[var_name]
-                    tensor.set(input_values[var_name], place)
+                    tensor.set(fed_value, place)
                 feed_map[var_name] = tensor
 
         return feed_map
 
     def _compile_op(self, place):
         # compile time prepare
-        op_proto = OpProtoHolder.instance().get_op_proto(self.op_type)
-        program = Program()
-        block = program.global_block()
-        if not hasattr(self, 'in_place_map'):
-            self.in_place_map = {}
-        inputs = self.append_input_output(
-            block, op_proto, self.inputs, is_input=True)
-        outputs = self.append_input_output(
-            block, op_proto, self.outputs, is_input=False)
-        # inputs = append_input_output(block, op_proto, self.inputs, self.in_place_map, {}, True)
-        # outputs = append_input_output(block, op_proto, self.outputs, self.in_place_map, inputs, False)
+        block = self.block
+        input_var_descs = self._init_var_descs(
+            self.op_proto.inputs, feed_values=self.inputs, is_input=True)
+        output_var_descs = self._init_var_descs(
+            self.op_proto.outputs, feed_values=self.outputs, is_input=False)
         op = block.append_op(
             type=self.op_type,
-            inputs=inputs,
-            outputs=outputs,
+            inputs=input_var_descs,
+            outputs=output_var_descs,
             attrs=self.attrs if hasattr(self, "attrs") else dict())
         # infer variable type and infer shape in compile-time
         op.desc.infer_var_type(block.desc)
         op.desc.infer_shape(block.desc)
 
-        return program, op, inputs, outputs
+        return op, input_var_descs, output_var_descs
 
-    def _prepare_input_output(self, place, inputs, outputs):
-        # prepare input and output of operator
+    def _get_fetch_list(self, var_descs, place, filter=None):
         fetch_list = []
-        for var_name, var in outputs.iteritems():
-            if var_name in self.outputs:
-                if isinstance(var, list):
-                    for v in var:
-                        fetch_list.append(v)
-                else:
-                    fetch_list.append(var)
-        feed_map = self.feed_var(inputs, self.inputs, place)
-        return fetch_list, feed_map
+        # print "Joe:_get_fetch_list:filter", filter, "var_descs", var_descs
+        # flat var_descs values
+        for var_name, var_desc in var_descs.iteritems():
+            sub_vars = []
+            if isinstance(var_desc, list):
+                sub_filters = [sub_var.name for sub_var in var_desc]
+            if isinstance(var_desc, list):
+                if filter is not None:
+                    if var_name not in filter:
+                        var_desc = [
+                            sub_var for sub_var in var_desc
+                            if sub_var.name in filter
+                        ]
+                fetch_list.extend(var_desc)
+            else:
+                if filter is not None and var_name not in filter:
+                    continue
+                fetch_list.append(var_desc)
 
-    def _execute(self, place, program, feed_map, fetch_list):
+        return fetch_list
+
+    def _execute(self, feed_map, fetch_list, place):
         exe = Executor(place)
-        return exe.run(program, feed=feed_map, fetch_list=fetch_list)
+        return exe.run(self.program, feed=feed_map, fetch_list=fetch_list)
 
     def _compare_results(self, place, outs, fetch_list, atol):
+        def find_actual(target_name, fetch_list):
+            if target_name in self.in_place_map:
+                target_name = self.in_place_map[target_name]
+            found = [
+                i for i, var in enumerate(fetch_list) if var.name == target_name
+            ]
+            self.assertTrue(
+                len(found) == 1, "Found {} {}".format(len(found), target_name))
+            return found[0]
+
         for out_name, out_dup in Operator.get_op_outputs(self.op_type):
             if out_name not in self.outputs:
                 continue
-
-            def find_actual(target_name, fetch_list):
-                if target_name in self.in_place_map:
-                    target_name = self.in_place_map[target_name]
-                found = [
-                    i for i, var in enumerate(fetch_list)
-                    if var.name == target_name
-                ]
-                self.assertTrue(
-                    len(found) == 1, "Found {} {}".format(
-                        len(found), target_name))
-                return found[0]
 
             if out_dup:
                 sub_out = self.outputs[out_name]
@@ -356,11 +233,12 @@ class OpTest(unittest.TestCase):
                                          ") has different lod at " + str(place))
 
     def check_output_with_place(self, place, atol):
-        self.init_cache_var()
-        program, op, inputs, outputs = self._compile_op(place)
-        fetch_list, feed_map = self._prepare_input_output(place, inputs,
-                                                          outputs)
-        outs = self._execute(place, program, feed_map, fetch_list)
+        self._init_program()
+        op, input_var_descs, output_var_descs = self._compile_op(place)
+        feed_map = self._feed_vars(input_var_descs, self.inputs, place)
+        fetch_list = self._get_fetch_list(
+            output_var_descs, place, filter=self.outputs.keys())
+        outs = self._execute(feed_map, fetch_list, place)
         self._compare_results(place, outs, fetch_list, atol)
 
     def check_output(self, atol=1e-5):
@@ -372,7 +250,6 @@ class OpTest(unittest.TestCase):
 
     def __assert_is_close(self, numeric_grads, analytic_grads, names,
                           max_relative_error, msg_prefix):
-
         for a, b, name in itertools.izip(numeric_grads, analytic_grads, names):
             abs_a = np.abs(a)
             abs_a[abs_a < 1e-3] = 1
@@ -389,50 +266,108 @@ class OpTest(unittest.TestCase):
 
             self.assertLessEqual(max_diff, max_relative_error, err_msg())
 
+    def _numeric_gradient(self,
+                          input_var_descs,
+                          output_var_descs,
+                          input_to_check,
+                          output_names,
+                          place,
+                          delta=0.005,
+                          in_place=False):
+        ctx = core.DeviceContext.create(core.CPUPlace())
+
+        def _init_input():
+            feed_map = self._feed_vars(input_var_descs, self.inputs, place)
+            tensor_to_check = feed_map.get(input_to_check, None)
+            assert tensor_to_check is not None, "Can't find input name {}".format(
+                input_to_check)
+            return feed_map, tensor_to_check
+
+        feed_map, tensor_to_check = _init_input()
+        # tensor_to_check = self.block.var(input_to_check).get_tensor()
+        tensor_to_check_dtype = {
+            core.DataType.FP32: np.float32,
+            core.DataType.FP64: np.float64
+        }.get(tensor_to_check.dtype(), None)
+        if tensor_to_check_dtype is None:
+            raise ValueError("Not supported data type " + str(
+                tensor_to_check_dtype))
+        tensor_size = np.prod(tensor_to_check.get_dims())
+        gradient_flat = np.zeros(
+            shape=(tensor_size, ), dtype=tensor_to_check_dtype)
+        # print "Joe:_num_grad:output_names", output_names
+        fetch_list = self._get_fetch_list(
+            output_var_descs, place, filter=output_names)
+        # output_var_descs, place, filter=output_names)
+        exe = Executor(place)
+
+        def __get_elem__(tensor, i):
+            if tensor_to_check_dtype == np.float32:
+                return tensor.get_float_element(i)
+            else:
+                return tensor.get_double_element(i)
+
+        def __set_elem__(tensor, i, e):
+            if tensor_to_check_dtype == np.float32:
+                tensor.set_float_element(i, e)
+            else:
+                tensor.set_double_element(i, e)
+
+        def run_once():
+            outs = exe.run(self.program, feed=feed_map, fetch_list=fetch_list)
+            return np.nanmean(
+                np.array([np.array(out) for out in outs]).mean(axis=0))
+
+        for i in xrange(tensor_size):
+            if in_place:
+                feed_map, tensor_to_check = _init_input()
+            # positive
+            origin = __get_elem__(tensor_to_check, i)
+            __set_elem__(tensor_to_check, i, origin + delta)
+            y_pos = run_once()
+
+            if in_place:
+                feed_map, tensor_to_check = _init_input()
+            # negative     
+            __set_elem__(tensor_to_check, i, origin - delta)
+            y_neg = run_once()
+            # restore            
+            __set_elem__(tensor_to_check, i, origin)
+            gradient_flat[i] = (y_pos - y_neg) / delta / 2.
+
+        return gradient_flat.reshape(tensor_to_check.get_dims())
+
     def check_grad(self,
                    inputs_to_check,
                    output_names,
-                   no_grad_set=None,
+                   no_grad_set=set(),
                    numeric_grad_delta=0.005,
                    in_place=False,
                    max_relative_error=0.005,
                    user_defined_grads=None):
-        self.init_cache_var()
-        self.scope = core.Scope()
-        op_inputs = self.inputs if hasattr(self, "inputs") else dict()
-        op_outputs = self.outputs if hasattr(self, "outputs") else dict()
-        op_attrs = self.attrs if hasattr(self, "attrs") else dict()
-        if not hasattr(self, 'in_place_map'):
-            self.in_place_map = {}
-        self.op = create_op(self.scope, self.op_type, self.in_place_map,
-                            op_inputs, op_outputs, op_attrs)
-        # program, op, inputs, outputs = self._compile_op(core.CPUPlace())
-        # self.op = op
+        self._init_program()
+        place = core.CPUPlace()
+        op, input_var_descs, output_var_descs = self._compile_op(place)
 
-        if no_grad_set is None:
-            no_grad_set = set()
-
-        if not type(output_names) is list:
+        if not isinstance(output_names, list):
             output_names = [output_names]
-
         numeric_grads = user_defined_grads or [
-            get_numeric_gradient(
-                self.scope,
-                self.op,
-                self.inputs,
-                self.in_place_map,
+            self._numeric_gradient(
+                input_var_descs,
+                output_var_descs,
                 input_to_check,
                 output_names,
+                place,
                 delta=numeric_grad_delta,
                 in_place=in_place) for input_to_check in inputs_to_check
         ]
-        cpu_place = core.CPUPlace()
-        cpu_analytic_grads = self._get_gradient(inputs_to_check, cpu_place,
+
+        cpu_analytic_grads = self._get_gradient(inputs_to_check, place,
                                                 output_names, no_grad_set)
 
         self.__assert_is_close(numeric_grads, cpu_analytic_grads,
                                inputs_to_check, max_relative_error,
-                               "Gradient Check On %s" % str(cpu_place))
+                               "Gradient Check On %s" % str(place))
 
         if core.is_compile_gpu() and self.op.support_gpu():
             gpu_place = core.GPUPlace(0)
@@ -444,98 +379,16 @@ class OpTest(unittest.TestCase):
                                    "Gradient Check On %s" % str(gpu_place))
 
     @staticmethod
-    def _create_var_descs_(block,
-                           var_dict,
-                           in_place_map={},
-                           input_vars={},
-                           cached_vars={}):
-        # FIXME: Try unify with `append_input_output`
-        def create_or_reuse_var(name, shape, dtype):
-            print "Joe:create_or_reuse_var:" + name
-            if name not in in_place_map:
-                var = block.create_var(name=name, shape=shape, dtype=dtype)
-            else:
-                print "Joe:reuse_var:" + name
-                var = cached_vars[in_place_map[name]]
-                # var = input_vars[in_place_map[name]]
-
-            cached_vars[name] = var
-            return var
-
-        for param_name in var_dict:
-            var = var_dict[param_name]
-            if not isinstance(var, list) and not isinstance(var, tuple):
-                var = [(param_name, var, None)]
-            if not isinstance(var[0], list) and not isinstance(var[0], tuple):
-                var = [(param_name, var[0], var[1])]
-
-            for i, item in enumerate(var):
-                if not isinstance(item[0], basestring):
-                    item = [[param_name] + list(item)]
-                if len(item) == 2:
-                    if isinstance(item[1], tuple):
-                        var[i] = [item[0], item[1][0], item[1][1]]
-                    else:
-                        # only set var name and value, set lod to None
-                        var[i] = list(item) + [None]
-            # var_descs = [(block.create_var(
-            var_descs = [(create_or_reuse_var(
-                name=name, shape=each.shape, dtype=each.dtype), each, lod)
-                         for name, each, lod in var]
-
-            yield param_name, var_descs
-
-    @staticmethod
     def _merge_list(iterable):
         return reduce(lambda a, b: list(a) + list(b), iterable, [])
 
-    @staticmethod
-    def _numpy_to_lod_tensor(np_value, lod, place):
-        tensor = core.LoDTensor()
-        tensor.set(np_value, place)
-        if lod is not None:
-            tensor.set_lod(lod)
-        return tensor
-
     def _get_gradient(self, input_to_check, place, output_names, no_grad_set):
-        prog = Program()
-        block = prog.global_block()
-        cached_vars = {}
-        inputs_with_np = {
-            key: value
-            for (key, value) in OpTest._create_var_descs_(
-                block, getattr(self, 'inputs', {}), cached_vars=cached_vars)
-        }
-        outputs_with_np = {
-            key: val
-            for (key, val) in OpTest._create_var_descs_(
-                block,
-                getattr(self, 'outputs', {}),
-                in_place_map=self.in_place_map,
-                input_vars=inputs_with_np,
-                cached_vars=cached_vars)
-        }
-        inputs = {
-            k: [item[0] for item in inputs_with_np[k]]
-            for k in inputs_with_np
-        }
-        outputs = {
-            k: [item[0] for item in outputs_with_np[k]]
-            for k in outputs_with_np
-        }
-        print "Joe:_get_gradient:before_append_op:inputs=", inputs, '\toutputs=', outputs
-        op = block.append_op(
-            type=self.op_type,
-            inputs=inputs,
-            outputs=outputs,
-            attrs=getattr(self, 'attrs', {}))
+        self._init_program()
+        forward_op, input_var_descs, output_var_descs = self._compile_op(place)
+        feed_map = self._feed_vars(input_var_descs, self.inputs, place)
 
-        # infer variable type and infer shape in compile-time
-        op.desc.infer_var_type(block.desc)
-        op.desc.infer_shape(block.desc)
-
+        block = self.block
         mean_inputs = map(block.var, output_names)
-
         if len(mean_inputs) == 1:
             loss = block.create_var(dtype=mean_inputs[0].data_type, shape=[1])
             op = block.append_op(
@@ -544,7 +397,9 @@ class OpTest(unittest.TestCase):
             op.desc.infer_shape(block.desc)
         else:
             avg_sum = []
+            debug_idx = 0
             for cur_loss in mean_inputs:
+                debug_idx += 1
                 cur_avg_loss = block.create_var(
                     dtype=cur_loss.data_type, shape=[1])
                 op = block.append_op(
@@ -572,13 +427,7 @@ class OpTest(unittest.TestCase):
 
         param_grad_list = append_backward_ops(
             loss=loss, parameter_list=input_to_check, no_grad_set=no_grad_set)
+        fetch_list = [g for _, g in param_grad_list]
 
-        feed_dict = {
-            item[0].name: OpTest._numpy_to_lod_tensor(item[1], item[2], place)
-            for p_name in inputs_with_np for item in inputs_with_np[p_name]
-        }
-
-        fetch_list = [g for p, g in param_grad_list]
-        executor = Executor(place)
-        result = executor.run(prog, feed_dict, fetch_list)
+        result = self._execute(feed_map, fetch_list, place)
         return map(np.array, result)

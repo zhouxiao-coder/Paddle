@@ -316,5 +316,123 @@ class TestBatchNormOp(OpTest):
                 test_with_place(place, data_format)
 
 
+class TestBatchNormOp2DBackward(OpTest):
+    def setUp(self):
+        self.op_type = "batch_norm"
+        N, C = np.random.randint(10), np.random.randint(10)
+        x_np = np.random.uniform(
+            size=(N, C), low=-1., high=1.).astype(np.float32)
+        scale_np = np.random.uniform(
+            size=(C), low=-1., high=1.).astype(np.float32)
+        bias_np = np.random.uniform(
+            size=(C), low=-1., high=1.).astype(np.float32)
+
+        scale_shape = (C)
+        mean_np = np.zeros(scale_shape).astype(np.float32)
+        variance_np = np.ones(scale_shape).astype(np.float32)
+        epsilon = 1e-5
+        momentum = 0.9
+
+        #forward
+        # batch_mean = 1. / N * np.sum(x_np, axis=0)
+        batch_mean = np.mean(x_np, axis=0)
+        batch_var = np.var(x_np, axis=0, ddof=1)
+        batch_std = (batch_var + epsilon)**-0.5
+        x_centered = (x_np - batch_mean) * batch_std
+        y = x_centered * scale_np + bias_np
+        running_mean = mean_np * momentum + batch_mean * (1. - momentum)
+        running_var = variance_np * momentum + batch_var * (1. - momentum)
+
+        self.attrs = {
+            "is_test": False,
+            "epsilon": epsilon,
+            "momentum": momentum,
+            "unbiased_estimate": True,
+            "tensor_format": "NC"
+        }
+        self.inputs = {
+            "X": x_np,
+            "Scale": scale_np,
+            "Bias": bias_np,
+            "Mean": mean_np,
+            "Variance": variance_np
+        }
+        self.outputs = {
+            "Y": y,
+            'MeanOut': running_mean,
+            "VarianceOut": running_var,
+            "SavedMean": batch_mean,
+            "SavedVariance": batch_std
+        }
+        self.in_place_map = {
+            "MeanOut": "Mean",
+            "Mean": "Mean",
+            "VarianceOut": "Variance",
+            "Variance": "Variance"
+        }
+
+    def test_check_grad(self):
+        self.check_grad(['X'], 'Y', max_relative_error=0.005)
+
+
+class TestBatchNormOp2DForward(OpTest):
+    def setUp(self):
+        self.op_type = "batch_norm"
+        N, C = np.random.randint(10), np.random.randint(10)
+        x_np = np.random.uniform(
+            size=(N, C), low=-1., high=1.).astype(np.float32)
+        scale_np = np.random.uniform(
+            size=(C), low=-1., high=1.).astype(np.float32)
+        bias_np = np.random.uniform(
+            size=(C), low=-1., high=1.).astype(np.float32)
+
+        scale_shape = (C)
+        mean_np = np.zeros(scale_shape).astype(np.float32)
+        variance_np = np.ones(scale_shape).astype(np.float32)
+        epsilon = 1e-5
+        momentum = 0.9
+
+        #forward
+        # batch_mean = 1. / N * np.sum(x_np, axis=0)
+        batch_mean = np.mean(x_np, axis=0)
+        batch_var = np.var(x_np, axis=0, ddof=1)
+        batch_std = (batch_var + epsilon)**-0.5
+        x_centered = (x_np - batch_mean) * batch_std
+        y = x_centered * scale_np + bias_np
+        running_mean = mean_np * momentum + batch_mean * (1. - momentum)
+        running_var = variance_np * momentum + batch_var * (1. - momentum)
+
+        self.attrs = {
+            "is_test": False,
+            "epsilon": epsilon,
+            "momentum": momentum,
+            "unbiased_estimate": True,
+            "tensor_format": "NC"
+        }
+        self.inputs = {
+            "X": x_np,
+            "Scale": scale_np,
+            "Bias": bias_np,
+            "Mean": mean_np,
+            "Variance": variance_np
+        }
+        self.outputs = {
+            "Y": y,
+            'MeanOut': running_mean,
+            "VarianceOut": running_var,
+            "SavedMean": batch_mean,
+            "SavedVariance": batch_std
+        }
+        self.in_place_map = {
+            "MeanOut": "Mean",
+            "Mean": "Mean",
+            "VarianceOut": "Variance",
+            "Variance": "Variance"
+        }
+
+    def test_check_output(self):
+        self.check_output()
+
+
 if __name__ == '__main__':
     unittest.main()
